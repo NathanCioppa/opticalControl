@@ -1,0 +1,3 @@
+#!/bin/bash
+
+echo "TEST" > /home/nathan/Projects/opticalControl/hello
