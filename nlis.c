@@ -8,6 +8,12 @@
 #include <linux/netlink.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <ctype.h>
+
+bool isOpticalDriveMsg(char *msgBuf, ssize_t msgSize);
+
+#define MAX_NETLINK_MSG 2048
 
 int main() {
 	int sockFd = socket(AF_NETLINK, SOCK_RAW, NETLINK_KOBJECT_UEVENT);
@@ -28,13 +34,31 @@ int main() {
 		return 2;
 	}
 
-	char buf[256];
-	ssize_t msgSize = recv(sockFd, &buf, 256, 0);
+	char msg[MAX_NETLINK_MSG];
+	ssize_t msgSize = recv(sockFd, &msg, MAX_NETLINK_MSG, 0);
 	if(msgSize == -1) {
 		printf("recv failed.\n");
 		return 3;
 	}
-	printf("passed\n");
+	char *msgEnd = msg + (msgSize - 1);
+	printf("%s\n", msg);
+	for(ssize_t i=0; i<msgSize; i++) {
+		if(msg[i] == '\0')
+			putchar('-');
+		else
+			putchar(msg[i]);
+	}
+	putchar('\n');
+
+	if(isOpticalDriveMsg((char *)msg, msgSize)) {
+		printf("Message from optical drive recieved\n");
+	}
 	return 0;
 
+}
+
+bool isOpticalDriveMsg(char *msgBuf, ssize_t msgSize) {
+	for(char *firstInvalid = msgBuf + msgSize; msgBuf != firstInvalid; msgBuf++) {
+		
+	}
 }
