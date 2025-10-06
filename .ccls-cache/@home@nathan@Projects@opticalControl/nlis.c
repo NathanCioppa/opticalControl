@@ -11,9 +11,12 @@
 #include <stdbool.h>
 #include <ctype.h>
 
-bool isOpticalDriveMsg(char *msgBuf, ssize_t msgSize);
+bool isOpticalDriveMsg(char *msgBuf, ssize_t msgSize, char *targetSubstr);
 
 #define MAX_NETLINK_MSG 2048
+
+static char *targetDevname;
+static ssize_t targetDevnameLen = -1;
 
 int main() {
 	int sockFd = socket(AF_NETLINK, SOCK_RAW, NETLINK_KOBJECT_UEVENT);
@@ -34,31 +37,38 @@ int main() {
 		return 2;
 	}
 
+	// the property that is expected to exist in a netlink message relating to a disc drive event.
+	char identifier[] = {'D','E','V'};//"DEVNAME=sr0";
+
 	char msg[MAX_NETLINK_MSG];
 	ssize_t msgSize = recv(sockFd, &msg, MAX_NETLINK_MSG, 0);
 	if(msgSize == -1) {
 		printf("recv failed.\n");
 		return 3;
 	}
-	char *msgEnd = msg + (msgSize - 1);
-	printf("%s\n", msg);
-	for(ssize_t i=0; i<msgSize; i++) {
-		if(msg[i] == '\0')
-			putchar('-');
-		else
-			putchar(msg[i]);
-	}
-	putchar('\n');
 
-	if(isOpticalDriveMsg((char *)msg, msgSize)) {
+	if(isOpticalDriveMsg((char *)msg, msgSize, identifier)) {
 		printf("Message from optical drive recieved\n");
 	}
 	return 0;
 
 }
 
-bool isOpticalDriveMsg(char *msgBuf, ssize_t msgSize) {
-	for(char *firstInvalid = msgBuf + msgSize; msgBuf != firstInvalid; msgBuf++) {
-		
+bool isOpticalDriveMsg(char *msgBuf, ssize_t msgSize, char *identifierStr) {
+	bool isMatching = true;
+	char *idStart = identifierStr;
+	char *firstInvalid = msgBuf+msgSize;
+	while(msgBuf != firstInvalid) {
+		if(isMatching && (isMatching = *msgBuf == *identifierStr)) {
+			if(*msgBuf == '\0')
+				return true;
+			identifierStr++;
+		}
+		else if(*msgBuf == '\0') {
+			isMatching = true;
+			identifierStr = idStart;
+		}
+		msgBuf++;
 	}
+	return false;
 }
