@@ -13,6 +13,9 @@
 #define ALLOC_LEN 36
 #define OP_CODE 0x12
 
+
+int readBit(unsigned char byte, int bit) ;
+
 int main() {
 	int fd = open(DEVICE_FILE, O_RDONLY | O_NONBLOCK);
 	if(fd < 0) {
@@ -52,11 +55,17 @@ int main() {
 	}
 	else {
 		for(int i=0; i<ALLOC_LEN; i++) {
-			printf("%d: %x\n", i, dataBuf[i]);
+			printf("%d: ", i);
+			for(int j=7; j>=0; j--)
+				printf("%d", readBit(dataBuf[i], j));
+			printf(" | 0x%x\n", dataBuf[i]);
 		}
 	}
 	return 0;
 
 }
 
-
+// returns the bit (zero indexed) of byte.
+int readBit(unsigned char byte, int bit) {
+	return (byte >> bit) & 1;
+} 

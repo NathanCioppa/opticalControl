@@ -9,11 +9,13 @@
 #define CDB_SIZE 10
 #define iOPCODE 0
 #define OPCODE 0x43
-#define iFORMAT 1
-#define FORMAT 0x02
-#define iMAX_ALLOC_LEN1 7
-#define iMAX_ALLOC_LEN2 8
-#define MAX_ALLOC_LEN_HALF 0xff
+#define iFORMAT 2
+#define FORMAT 0x00
+#define iALLOC_LEN_LSBYTE 8 // least significant byte of allocation length
+#define iALLOC_LEN_MSBYTE 7 // most significant byte of allocation length
+#define ALLOC_LEN_LSBYTE 0xff 
+#define ALLOC_LEN_MSBYTE 0x3 
+#define ALLOC_LEN 0x3ff // should correspond to ALLOC_LEN_LSBYTE and ALLOC_LEN_MSBYTE  above
 
 #define DEVICE_FILE "/dev/sg0"
 #define SCSI_GENERIC_INTERFACE_ID 'S'
@@ -29,9 +31,13 @@ int main() {
 	unsigned char cdb[CDB_SIZE];
 	memset(cdb, 0, CDB_SIZE);
 	cdb[iOPCODE] = OPCODE;
-	///cdb[iFORMAT] = FORMAT;
-	cdb[iMAX_ALLOC_LEN2] = 0x04;
-	//cdb[iMAX_ALLOC_LEN2] = MAX_ALLOC_LEN_HALF;
+
+	// The Allocation Length field is bytes 7 and 8 (zero indexed), 8 is least significant
+	// maximum number of tracks for a standard CD is 99
+	// each TOC entry returned is 8 bytes, + the 4 byte header.
+	// ALLOC_LEN should and related definitions should accomodate this.
+	cdb[iALLOC_LEN_LSBYTE] = ALLOC_LEN_LSBYTE;
+	cdb[iALLOC_LEN_MSBYTE] = ALLOC_LEN_MSBYTE;
 
 	
 	// Documentation for sg_io_hdr_t type (at least the best docs I could find):
@@ -39,16 +45,16 @@ int main() {
 	sg_io_hdr_t hdr;
 	memset(&hdr, 0, sizeof(sg_io_hdr_t));
 
-	char dxferp[256];
-	memset(dxferp, 0, 256);
+	char dxferp[ALLOC_LEN];
+	memset(dxferp, 0, ALLOC_LEN);
 
 	unsigned char senseBuf[MAX_SENSE_BUF_LEN];
-	memset(&senseBuf, 0, MAX_SENSE_BUF_LEN);
+	memset(senseBuf, 0, MAX_SENSE_BUF_LEN);
 
 	hdr.interface_id = SCSI_GENERIC_INTERFACE_ID;
 	hdr.dxfer_direction = SG_DXFER_FROM_DEV;
 	hdr.dxferp = dxferp;
-	hdr.dxfer_len = 256;
+	hdr.dxfer_len = ALLOC_LEN;
 	hdr.cmd_len = CDB_SIZE;
 	hdr.mx_sb_len = MAX_SENSE_BUF_LEN;
 	hdr.cmdp = cdb;
@@ -63,8 +69,8 @@ int main() {
 
 	if(hdr.sb_len_wr == 0) {
 		printf("good\n");
-		for(int i = 0; i<hdr.resid; i++) {
-			putchar(dxferp[i]);
+		for(int i = 0; i<0xf; i++) {
+			printf("%d: %x\n",i,dxferp[i]);
 		}
 		putchar('\n');
 	}
