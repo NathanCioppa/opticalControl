@@ -58,12 +58,18 @@
 #define MAX_SENSE 0xff
 #define ONE_BYTE 8
 #define READ_TOC_HDR_SIZE 4
+#define MAX_CD_TRACK_COUNT 99
+#define PACK_TYPE_TRACK 0x80
+#define PACK_TRACK_NUM_ALBUM 0x00
+#define PACK_LEN 4
 
 
 void printPack(unsigned char *pack);
 int readBit(char byte, int bit);
 void printByte(char byte);
 unsigned int getDataLen(unsigned char *readTextResponse);
+unsigned char *getPackStart(unsigned char *readTextResponse);
+void printTrackTitles(unsigned char *packs, unsigned int packsSize) ;
 
 int main() {
 	int fd = open(DEVICE_FILE, O_RDONLY);
@@ -109,10 +115,14 @@ int main() {
 	unsigned int dataLen = getDataLen(dxferp);
 	printf("%u\n", dataLen);
 	
-	unsigned char *pack = dxferp + READ_TOC_HDR_SIZE;
-	for(unsigned int i=0; i<ALLOC_LEN-READ_TOC_HDR_SIZE && i<dataLen; i+=18, pack+=18) {
-		printPack(pack);
-	}
+	unsigned char *packs = getPackStart(dxferp);
+	printTrackTitles(packs, dataLen-2);
+
+	//unsigned char *pack = packs;
+
+	//for(unsigned int i=0; i<ALLOC_LEN-READ_TOC_HDR_SIZE && i<dataLen-2; i+=18, pack+=18) {
+	//	printPack(pack);
+	//}
 
 	return 0;
 }
@@ -143,10 +153,39 @@ void printByte(char byte) {
 	putchar('\n');
 }
 
+unsigned char *getPackStart(unsigned char *readTextResponse) {
+	return readTextResponse + READ_TOC_HDR_SIZE;
+}
+
 // *readTextResponse is the data recieved from READ TOC/PMA/ATIP with format 0101b (MMC-3 Manual)
 // As described in MMC-3 Manual, the first two bytes of the response are the size of the CD-Text data. 
 unsigned int getDataLen(unsigned char *readTextResponse) {
 	unsigned int MSByte = (unsigned int)(readTextResponse[0]);
 	unsigned int LSByte = (unsigned int)(readTextResponse[1]);
 	return (MSByte << ONE_BYTE) | LSByte;
+}
+
+char **getTrackTitles(unsigned char *packs, unsigned int packsSize) {
+	char *titlesProto[MAX_CD_TRACK_COUNT+1];
+	memset(titlesProto, 0, 	MAX_CD_TRACK_COUNT);
+
+	for(int i = 0; i<packsSize; i+=PACK_LEN, packs+=PACK_LEN) {
+		
+	}
+	return NULL;
+	
+}
+
+void printTrackTitles(unsigned char *packs, unsigned int packsSize) {
+	for(int i=0; i<packsSize; i+=18, packs+=18) {
+		if(packs[0] == PACK_TYPE_TRACK) {
+			for(unsigned char *payload = packs+4; payload < packs+16; payload++) {
+				if(*payload == '\0')
+					putchar('\n');
+				else
+					putchar((char)*payload);
+			}
+		}
+	}
+
 }
