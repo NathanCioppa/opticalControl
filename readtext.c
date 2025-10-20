@@ -53,7 +53,6 @@
 #define iALLOC_LEN_LSBYTE 8
 
 
-
 #define DEVICE_FILE "/dev/sg0"
 #define MAX_SENSE 0xff
 #define ONE_BYTE 8
@@ -62,6 +61,8 @@
 #define PACK_TYPE_TRACK 0x80
 #define PACK_TRACK_NUM_ALBUM 0x00
 #define PACK_LEN 4
+#define SCSI_GENERIC_INTERFACE_ID 'S'
+#define SG_IO_TIMEOUT 10000
 
 
 void printPack(unsigned char *pack);
@@ -70,6 +71,9 @@ void printByte(char byte);
 unsigned int getDataLen(unsigned char *readTextResponse);
 unsigned char *getPackStart(unsigned char *readTextResponse);
 void printTrackTitles(unsigned char *packs, unsigned int packsSize) ;
+void buildCDB(unsigned char cdb[CDB_SIZE]);
+void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb, unsigned char dataBuf[ALLOC_LEN], unsigned char senseBuf[MAX_SENSE]);
+
 
 int main() {
 	int fd = open(DEVICE_FILE, O_RDONLY);
@@ -78,29 +82,13 @@ int main() {
 		return 1;
 	}
 
+	unsigned char dataBuf[ALLOC_LEN]; 
+	unsigned char senseBuf[MAX_SENSE];
 	unsigned char cdb[CDB_SIZE];
-	memset(cdb, 0, CDB_SIZE);
-	cdb[iOPCODE] = OPCODE;
-	cdb[iALLOC_LEN_MSBYTE] = ALLOC_MSBYTE;
-	cdb[iALLOC_LEN_LSBYTE] = ALLOC_LSBYTE;
-	cdb[iFORMAT] = FORMAT;
-
-	unsigned char dxferp[ALLOC_LEN]; 
+	buildCDB(cdb);
 
 	sg_io_hdr_t hdr;
-	memset(&hdr, 0, sizeof(sg_io_hdr_t));
-
-	unsigned char senseBuf[MAX_SENSE];
-
-	hdr.interface_id = 'S';
-	hdr.cmdp = cdb;
-	hdr.cmd_len = CDB_SIZE;
-	hdr.dxfer_direction = SG_DXFER_FROM_DEV;
-	hdr.dxferp = dxferp;
-	hdr.dxfer_len = ALLOC_LEN;
-	hdr.mx_sb_len = MAX_SENSE;
-	hdr.sbp = senseBuf;
-	hdr.timeout = 10000;
+	buildSgIoHdr(&hdr, cdb, dataBuf, senseBuf);
 
 	if(ioctl(fd, SG_IO, &hdr) == -1) {
 		printf("ioctl failed\n");
@@ -112,10 +100,10 @@ int main() {
 		return 3;
 	}
 
-	unsigned int dataLen = getDataLen(dxferp);
+	unsigned int dataLen = getDataLen(dataBuf);
 	printf("%u\n", dataLen);
 	
-	unsigned char *packs = getPackStart(dxferp);
+	unsigned char *packs = getPackStart(dataBuf);
 	printTrackTitles(packs, dataLen-2);
 
 	//unsigned char *pack = packs;
@@ -125,6 +113,28 @@ int main() {
 	//}
 
 	return 0;
+}
+
+void buildCDB(unsigned char cdb[CDB_SIZE]) {
+	memset(cdb, 0, CDB_SIZE);
+	cdb[iOPCODE] = OPCODE;
+	cdb[iALLOC_LEN_MSBYTE] = ALLOC_MSBYTE;
+	cdb[iALLOC_LEN_LSBYTE] = ALLOC_LSBYTE;
+	cdb[iFORMAT] = FORMAT;
+}
+
+void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb,unsigned char dataBuf[ALLOC_LEN], unsigned char senseBuf[MAX_SENSE]) {
+	memset(hdr, 0, sizeof(sg_io_hdr_t));
+	
+	hdr->interface_id = SCSI_GENERIC_INTERFACE_ID;
+	hdr->cmdp = cdb;
+	hdr->cmd_len = CDB_SIZE;
+	hdr->dxfer_direction = SG_DXFER_FROM_DEV;
+	hdr->dxferp = dataBuf;
+	hdr->dxfer_len = ALLOC_LEN;
+	hdr->mx_sb_len = MAX_SENSE;
+	hdr->sbp = senseBuf;
+	hdr->timeout = SG_IO_TIMEOUT;
 }
 
 void printPack(unsigned char *pack) {
