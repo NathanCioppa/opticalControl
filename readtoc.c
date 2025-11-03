@@ -6,46 +6,50 @@
 #include <scsi/sg.h>
 #include <string.h>
 
+#include "readtoc.h"
+
 #define CDB_SIZE 10
 #define iOPCODE 0
 #define OPCODE 0x43
 #define iFORMAT 2
 #define FORMAT 0x00
 #define iALLOC_LEN_LSBYTE 8 // least significant byte of allocation length
-#define iALLOC_LEN_MSBYTE 7 // most significant byte of allocation length
-#define ALLOC_LEN_LSBYTE 0xff 
-#define ALLOC_LEN_MSBYTE 0x3 
-#define ALLOC_LEN 0x3ff // should correspond to ALLOC_LEN_LSBYTE and ALLOC_LEN_MSBYTE  above
+#define ALLOC_LEN 0x04 // only enough space for the header, the data for the actual entries is not needed.
 
 #define DEVICE_FILE "/dev/sg0"
 #define SCSI_GENERIC_INTERFACE_ID 'S'
 #define MAX_SENSE_BUF_LEN 64
 
+int getTrackCount(unsigned char *tocHeader);
+
 int main() {
+	int trackCount = -1;
+	readTOC(&trackCount);
+	printf("%d\n", trackCount);
+}
+
+// Return value indicates either success of command or an indicator of faliliure.
+// Return values are in readtoc.h
+// On success, value of *trackCount is set to the number of tracks on the CD. 
+int readTOC(int *trackCount) {
 	int fd = open(DEVICE_FILE, O_RDONLY);
 	if(fd == -1) {
 		printf("failed to open file /dev/sg0\n");
-		return 1;
+		return -1;
 	}
 
 	unsigned char cdb[CDB_SIZE];
 	memset(cdb, 0, CDB_SIZE);
 	cdb[iOPCODE] = OPCODE;
 
-	// The Allocation Length field is bytes 7 and 8 (zero indexed), 8 is least significant
-	// maximum number of tracks for a standard CD is 99
-	// each TOC entry returned is 8 bytes, + the 4 byte header.
-	// ALLOC_LEN should and related definitions should accomodate this.
-	cdb[iALLOC_LEN_LSBYTE] = ALLOC_LEN_LSBYTE;
-	cdb[iALLOC_LEN_MSBYTE] = ALLOC_LEN_MSBYTE;
-
+	cdb[iALLOC_LEN_LSBYTE] = ALLOC_LEN;
 	
 	// Documentation for sg_io_hdr_t type (at least the best docs I could find):
 	// https://sg.danny.cz/sg/p/scsi-generic_v3.txt
 	sg_io_hdr_t hdr;
 	memset(&hdr, 0, sizeof(sg_io_hdr_t));
 
-	char dxferp[ALLOC_LEN];
+	unsigned char dxferp[ALLOC_LEN];
 	memset(dxferp, 0, ALLOC_LEN);
 
 	unsigned char senseBuf[MAX_SENSE_BUF_LEN];
@@ -63,25 +67,17 @@ int main() {
 
 	if(ioctl(fd, SG_IO, &hdr) == -1) {
 		close(fd);
-		printf("Error in ioctl()\n");
-		return 2;
+		return TOC_IOCTL_FAIL;
 	}
+	close(fd);
 
 	if(hdr.sb_len_wr == 0) {
-		printf("good\n");
-		for(int i = 0; i<0xf; i++) {
-			printf("%d: %x\n",i,dxferp[i]);
-		}
-		putchar('\n');
+		*trackCount = getTrackCount(dxferp);
+		return READ_TOC_SUCCESS; 
 	}
-	else {
-		printf("sb len: %d\n", hdr.sb_len_wr);
-		for(int i=0; i<hdr.sb_len_wr; i++) {
-			printf("%x\n", hdr.sbp[i]);
-		}
-	}
-
-	close(fd);
-	return 0;
+	return NO_TOC;
 }
 
+int getTrackCount(unsigned char *tocHeader) {
+	return tocHeader[3];
+}

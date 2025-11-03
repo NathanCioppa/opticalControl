@@ -37,8 +37,9 @@
 #include <sys/ioctl.h>
 #include <scsi/sg.h>
 #include <string.h>
+#include "cd.h"
 
-// Command Descriptor Block components for 
+// Command Descriptor Block components for READ TOC/PMA/ATIP 
 // Documentation in MMC-3 Manual 6.25 READ TOC/PMA/ATIP Command
 #define CDB_SIZE 10
 #define OPCODE 0x43
@@ -75,7 +76,7 @@ void buildCDB(unsigned char cdb[CDB_SIZE]);
 void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb, unsigned char dataBuf[ALLOC_LEN], unsigned char senseBuf[MAX_SENSE]);
 
 
-int main() {
+int readText() {
 	int fd = open(DEVICE_FILE, O_RDONLY);
 	if(fd == -1) {
 		printf("failed to open device %s\n", DEVICE_FILE);
@@ -100,11 +101,18 @@ int main() {
 		return 3;
 	}
 
-	unsigned int dataLen = getDataLen(dataBuf);
-	printf("%u\n", dataLen);
+	unsigned int packsLen = getDataLen(dataBuf);
+	if(packsLen <= 2)  {
+		printf("there was no pack data returned\n");
+		return 4;
+	}
+	packsLen -= 2; // There are 2 bytes in the header after the data length field that are not part of pack data.
+	printf("%u\n", packsLen);
 	
 	unsigned char *packs = getPackStart(dataBuf);
-	printTrackTitles(packs, dataLen-2);
+	printTrackTitles(packs, packsLen);
+
+	
 
 	//unsigned char *pack = packs;
 
