@@ -32,12 +32,11 @@
 */
 
 #include <fcntl.h>
-#include <unistd.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <scsi/sg.h>
 #include <string.h>
-#include "cd.h"
+#include <stdlib.h>
 
 // Command Descriptor Block components for READ TOC/PMA/ATIP 
 // Documentation in MMC-3 Manual 6.25 READ TOC/PMA/ATIP Command
@@ -74,9 +73,23 @@ unsigned char *getPackStart(unsigned char *readTextResponse);
 void printTrackTitles(unsigned char *packs, unsigned int packsSize) ;
 void buildCDB(unsigned char cdb[CDB_SIZE]);
 void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb, unsigned char dataBuf[ALLOC_LEN], unsigned char senseBuf[MAX_SENSE]);
+int readText(int *textLenDest, unsigned char **textDest);
 
+//int main() {
+//	unsigned char *dest = NULL;
+//	int len = -1;
+//	readText(&len, &dest);
+//	printf("%d\n", len);
+//	printTrackTitles(dest, len);
+//	return 0;
+//
+//}
 
-int readText() {
+// *textLenDest will be populated with the size of the pointer to full CD-Text 
+// **textDest should be the address of a pointer. 
+// 	That pointer will be replaced with a memory allocated pointer to the full CD-Text
+// If the function fails, neither parameters will be modified. 
+int readText(int *textLenDest, unsigned char **textDest) {
 	int fd = open(DEVICE_FILE, O_RDONLY);
 	if(fd == -1) {
 		printf("failed to open device %s\n", DEVICE_FILE);
@@ -107,18 +120,20 @@ int readText() {
 		return 4;
 	}
 	packsLen -= 2; // There are 2 bytes in the header after the data length field that are not part of pack data.
-	printf("%u\n", packsLen);
 	
 	unsigned char *packs = getPackStart(dataBuf);
-	printTrackTitles(packs, packsLen);
-
 	
+	int actualLen = ALLOC_LEN - 4; // -4 to remove whole header
+	if(packsLen < ALLOC_LEN)
+		actualLen = packsLen;
 
-	//unsigned char *pack = packs;
-
-	//for(unsigned int i=0; i<ALLOC_LEN-READ_TOC_HDR_SIZE && i<dataLen-2; i+=18, pack+=18) {
-	//	printPack(pack);
-	//}
+	void *text = malloc(actualLen);
+	if(!text)
+		return 11;
+	memcpy(text, packs, actualLen);
+	
+	*textLenDest = actualLen;
+	*textDest = text;
 
 	return 0;
 }
@@ -145,30 +160,8 @@ void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb,unsigned char dataBuf[ALL
 	hdr->timeout = SG_IO_TIMEOUT;
 }
 
-void printPack(unsigned char *pack) {
-	printf("==============================\n");
-	printf("0 | 0x%x ", *pack);
-	printByte(*pack++);
-	printf("1 | 0x%x ", *pack);
-	printByte(*pack++);
-	printf("2 | 0x%x ", *pack);
-	printByte(*pack++);
-	printf("3 | 0x%x ", *pack);
-	printByte(*pack++);
-	for(int i=0; i<12; i++, pack++) {
-		printf("%c", *pack);
-	}
-	putchar('\n');
-}
-
 int readBit(char byte, int bit) {
 	return (byte >> bit) & 1;
-}
-
-void printByte(char byte) {
-	for(int i=7; i>=0; i--)
-		printf("%d", readBit(byte, i));
-	putchar('\n');
 }
 
 unsigned char *getPackStart(unsigned char *readTextResponse) {
@@ -181,17 +174,6 @@ unsigned int getDataLen(unsigned char *readTextResponse) {
 	unsigned int MSByte = (unsigned int)(readTextResponse[0]);
 	unsigned int LSByte = (unsigned int)(readTextResponse[1]);
 	return (MSByte << ONE_BYTE) | LSByte;
-}
-
-char **getTrackTitles(unsigned char *packs, unsigned int packsSize) {
-	char *titlesProto[MAX_CD_TRACK_COUNT+1];
-	memset(titlesProto, 0, 	MAX_CD_TRACK_COUNT);
-
-	for(int i = 0; i<packsSize; i+=PACK_LEN, packs+=PACK_LEN) {
-		
-	}
-	return NULL;
-	
 }
 
 void printTrackTitles(unsigned char *packs, unsigned int packsSize) {
