@@ -62,9 +62,13 @@
 #define PACK_TRACK_NUM_ALBUM 0x00
 #define SCSI_GENERIC_INTERFACE_ID 'S'
 #define SG_IO_TIMEOUT 10000
+
 #define PACK_LEN 18
 #define TEXT_DATA_FIELD_LEN 12
 #define TEXT_DATA_FIELD_START 4
+#define TITLE_INDICATOR 0x80
+#define ALBUM_INDICATOR 0x00
+#define ARTIST_INDICATOR 0x81
 
 void printPack(unsigned char *pack);
 int readBit(char byte, int bit);
@@ -76,6 +80,7 @@ void buildCDB(unsigned char cdb[CDB_SIZE]);
 void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb, unsigned char dataBuf[ALLOC_LEN], unsigned char senseBuf[MAX_SENSE]);
 int readText(int *textLenDest, unsigned char **textDest);
 char *getAlbumName(void *packs, unsigned int packsSize);
+char *getAlbumArtist(void *packs, unsigned int packsSize);
 
 int main() {
 	unsigned char *dest = NULL;
@@ -84,6 +89,7 @@ int main() {
 	printf("%d\n", len);
 	//printTrackTitles(dest, len);
 	char *albumName = getAlbumName(dest, len);
+	//char *albumArtist = getAlbumArtist(dest, len);
 	printf("%s\n", albumName);
 	return 0;
 
@@ -191,8 +197,45 @@ char *getAlbumName(void *packs, unsigned int packsSize) {
 	for(int i=0; i<packsSize; i+=PACK_LEN, thisPack+=PACK_LEN) {
 		unsigned char id1 = ((unsigned char *)thisPack)[0];
 		unsigned char id2 = ((unsigned char *)thisPack)[1];
-		if(id1 != 0x80 || id2 != 0) 
+		if(id1 != TITLE_INDICATOR || id2 != ALBUM_INDICATOR) 
 			continue; // this is not album name info
+
+		// iterate through just the portion of the pack that has the text data (everything else is metadata)
+		for(int iData = TEXT_DATA_FIELD_START; iData < TEXT_DATA_FIELD_START+TEXT_DATA_FIELD_LEN; iData++, nameLen++) {
+			// resize *albumName if needed
+			if(nameLen >= maxNameLen-1) {
+				maxNameLen *= 2;
+				char *temp = realloc(albumName, maxNameLen);
+				if(temp)
+					albumName = temp;
+				else {
+					free(albumName);
+					return NULL;
+				};
+			}
+
+			albumName[nameLen] = ((char *)thisPack)[iData];
+			if(albumName[nameLen] == '\0') // can return early since the string would terminate here anyway
+				return albumName;
+		}
+	}
+	albumName[nameLen] = '\0'; // ensure is termainated as a string
+	return albumName;
+}
+
+char *getAlbumArtist(void *packs, unsigned int packsSize) {
+	size_t maxNameLen = 32;
+	size_t nameLen = 0;
+	char *albumName = malloc(maxNameLen);
+	if(!albumName)
+		return NULL;
+
+	void *thisPack = packs;
+	for(int i=0; i<packsSize; i+=PACK_LEN, thisPack+=PACK_LEN) {
+		unsigned char id1 = ((unsigned char *)thisPack)[0];
+		unsigned char id2 = ((unsigned char *)thisPack)[1];
+		if(id1 != ARTIST_INDICATOR || id2 != ALBUM_INDICATOR) 
+			continue; // this is not album artist info
 
 		// iterate through just the portion of the pack that has the text data (everything else is metadata)
 		for(int iData = TEXT_DATA_FIELD_START; iData < TEXT_DATA_FIELD_START+TEXT_DATA_FIELD_LEN; iData++, nameLen++) {
