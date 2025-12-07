@@ -37,6 +37,9 @@
 #include <scsi/sg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <wchar.h>
+#include <locale.h>
+#include <stdint.h>
 
 // Command Descriptor Block components for READ TOC/PMA/ATIP 
 // Documentation in MMC-3 Manual 6.25 READ TOC/PMA/ATIP Command
@@ -70,6 +73,10 @@
 #define ALBUM_INDICATOR 0x00
 #define ARTIST_INDICATOR 0x81
 
+#define UTF8_2BYTE_HEADER 0b11000000
+#define UTF8_CONINUATION_BYTE 0b10000000
+#define LOW_ORDER_6BITS 0b00111111
+
 void printPack(unsigned char *pack);
 int readBit(char byte, int bit);
 void printByte(char byte);
@@ -81,16 +88,20 @@ void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb, unsigned char dataBuf[AL
 int readText(int *textLenDest, unsigned char **textDest);
 char *getAlbumName(void *packs, unsigned int packsSize);
 char *getAlbumArtist(void *packs, unsigned int packsSize);
+static void pr(void *str);
+uint16_t toUtf8(unsigned char c);
 
 int main() {
 	unsigned char *dest = NULL;
 	int len = -1;
-	readText(&len, &dest);
+	if(readText(&len, &dest))
+		return 1;
 	printf("%d\n", len);
 	//printTrackTitles(dest, len);
 	char *albumName = getAlbumName(dest, len);
-	//char *albumArtist = getAlbumArtist(dest, len);
+	char *albumArtist = getAlbumArtist(dest, len);
 	printf("%s\n", albumName);
+	printf("%s\n",albumArtist);
 	return 0;
 
 }
@@ -193,10 +204,10 @@ char *getAlbumName(void *packs, unsigned int packsSize) {
 	if(!albumName)
 		return NULL;
 
-	void *thisPack = packs;
+	unsigned char *thisPack = packs;
 	for(int i=0; i<packsSize; i+=PACK_LEN, thisPack+=PACK_LEN) {
-		unsigned char id1 = ((unsigned char *)thisPack)[0];
-		unsigned char id2 = ((unsigned char *)thisPack)[1];
+		unsigned char id1 = thisPack[0];
+		unsigned char id2 = thisPack[1];
 		if(id1 != TITLE_INDICATOR || id2 != ALBUM_INDICATOR) 
 			continue; // this is not album name info
 
@@ -205,7 +216,7 @@ char *getAlbumName(void *packs, unsigned int packsSize) {
 			// resize *albumName if needed
 			if(nameLen >= maxNameLen-1) {
 				maxNameLen *= 2;
-				char *temp = realloc(albumName, maxNameLen);
+				char *temp = realloc(albumName, maxNameLen*sizeof(wchar_t));
 				if(temp)
 					albumName = temp;
 				else {
@@ -214,7 +225,7 @@ char *getAlbumName(void *packs, unsigned int packsSize) {
 				};
 			}
 
-			albumName[nameLen] = ((char *)thisPack)[iData];
+			albumName[nameLen] = thisPack[iData];
 			if(albumName[nameLen] == '\0') // can return early since the string would terminate here anyway
 				return albumName;
 		}
@@ -230,17 +241,17 @@ char *getAlbumArtist(void *packs, unsigned int packsSize) {
 	if(!albumName)
 		return NULL;
 
-	void *thisPack = packs;
+	unsigned char *thisPack = packs;
 	for(int i=0; i<packsSize; i+=PACK_LEN, thisPack+=PACK_LEN) {
-		unsigned char id1 = ((unsigned char *)thisPack)[0];
-		unsigned char id2 = ((unsigned char *)thisPack)[1];
+		unsigned char id1 = thisPack[0];
+		unsigned char id2 = thisPack[1];
 		if(id1 != ARTIST_INDICATOR || id2 != ALBUM_INDICATOR) 
 			continue; // this is not album artist info
 
 		// iterate through just the portion of the pack that has the text data (everything else is metadata)
 		for(int iData = TEXT_DATA_FIELD_START; iData < TEXT_DATA_FIELD_START+TEXT_DATA_FIELD_LEN; iData++, nameLen++) {
-			// resize *albumName if needed
-			if(nameLen >= maxNameLen-1) {
+			// resize *albumName if needed, 2 since in it possible that a two-byte UTF character will be added
+			if(nameLen >= maxNameLen-2) {
 				maxNameLen *= 2;
 				char *temp = realloc(albumName, maxNameLen);
 				if(temp)
@@ -251,7 +262,12 @@ char *getAlbumArtist(void *packs, unsigned int packsSize) {
 				};
 			}
 
-			albumName[nameLen] = ((char *)thisPack)[iData];
+			unsigned char c = thisPack[iData];
+			uint16_t utf8Char = toUtf8(c);
+			albumName[nameLen] = (char)utf8Char;
+			if(c >= 128)
+				albumName[++nameLen] = (char)(utf8Char >> ONE_BYTE); 
+
 			if(albumName[nameLen] == '\0') // can return early since the string would terminate here anyway
 				return albumName;
 		}
@@ -273,3 +289,18 @@ void printTrackTitles(unsigned char *packs, unsigned int packsSize) {
 	}
 
 }
+
+uint16_t toUtf8(unsigned char c) {
+	if(c < 128)
+		return (uint16_t)c;
+
+	// two highest order bits of c become the lowest order bits of the UTF8 header byte
+	unsigned char firstByteUtf8 = UTF8_2BYTE_HEADER | (c >> 6);
+	// remaining 6 low order bits become low order bits of the UTF8 continuation byte
+	unsigned char secondByteUtf8 = UTF8_CONINUATION_BYTE | (c & LOW_ORDER_6BITS);
+
+	uint16_t twoByteUtf8 = secondByteUtf8;
+	twoByteUtf8 = (twoByteUtf8 << ONE_BYTE) | firstByteUtf8;
+	return twoByteUtf8;
+}
+
