@@ -8,11 +8,6 @@ struct CD {
 	int tracks;
 };
 
-struct CDText {
-	Track *album;
-	Track **tracks;
-};
-
 struct Track {
 	char *name;
 	char *artist;

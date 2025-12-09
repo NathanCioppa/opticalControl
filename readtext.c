@@ -1,4 +1,5 @@
 
+
 /* Issues the SCSI Multi Media Command to read the CD-Text of an audio disc.
  *
  * Sources are as follows and will be refered to by aliases when referenced:
@@ -40,6 +41,8 @@
 #include <wchar.h>
 #include <locale.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include "cd.h"
 
 // Command Descriptor Block components for READ TOC/PMA/ATIP 
 // Documentation in MMC-3 Manual 6.25 READ TOC/PMA/ATIP Command
@@ -72,6 +75,8 @@
 #define TITLE_INDICATOR 0x80
 #define ALBUM_INDICATOR 0x00
 #define ARTIST_INDICATOR 0x81
+#define BLOCK_NUM_MASK 0b01110000
+#define PACK_OFFSET_TO_BLOCKNUM_BYTE 3
 
 #define UTF8_2BYTE_HEADER 0b11000000
 #define UTF8_CONINUATION_BYTE 0b10000000
@@ -85,32 +90,52 @@ unsigned char *getPackStart(unsigned char *readTextResponse);
 void printTrackTitles(unsigned char *packs, unsigned int packsSize) ;
 void buildCDB(unsigned char cdb[CDB_SIZE]);
 void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb, unsigned char dataBuf[ALLOC_LEN], unsigned char senseBuf[MAX_SENSE]);
-int readText(int *textLenDest, unsigned char **textDest);
+int readText(CDText **dest);
 char *getAlbumName(void *packs, unsigned int packsSize);
 char *getAlbumArtist(void *packs, unsigned int packsSize);
 static void pr(void *str);
 uint16_t toUtf8(unsigned char c);
+uint8_t getBlockNum(void *pack);
+CDText *makeCDText(char *packs, int packsSize);
+int setBlock(CDText *text, uint8_t blockNum);
+
+typedef struct Block Block;
+
+struct CDText {
+	char *packs;
+	Block *block;
+	uint16_t packsSize;
+};
+
+struct Block {
+	char *packs;
+	Track *album;
+	Track **tracks;
+	uint16_t packsSize;
+	uint8_t tracksLen;
+};
 
 int main() {
-	unsigned char *dest = NULL;
-	int len = -1;
-	if(readText(&len, &dest))
+	CDText *text = NULL;
+	if(readText(&text))
 		return 1;
-	printf("%d\n", len);
-	//printTrackTitles(dest, len);
-	char *albumName = getAlbumName(dest, len);
-	char *albumArtist = getAlbumArtist(dest, len);
+	if(setBlock(text, 0))
+		return 2;
+	printf("%d\n", text->packsSize);
+	printf("%d\n", text->block->packsSize);
+	char *albumArtist = getAlbumArtist(text->block->packs, text->block->packsSize);
+	char *albumName = getAlbumName(text->block->packs, text->block->packsSize);
 	printf("%s\n", albumName);
 	printf("%s\n",albumArtist);
+
 	return 0;
 
 }
 
-// *textLenDest will be populated with the size of the pointer to full CD-Text 
-// **textDest should be the address of a pointer. 
-// 	That pointer will be replaced with a memory allocated pointer to the full CD-Text
-// If the function fails, neither parameters will be modified. 
-int readText(int *textLenDest, unsigned char **textDest) {
+// CDText **dest pointer will be replaced with a memory allocated pointer returned by makeCDText()
+// On failiure, **dest is unmodified
+// returns an error code, 0 is success.
+int readText(CDText **dest) {
 	int fd = open(DEVICE_FILE, O_RDONLY);
 	if(fd == -1) {
 		printf("failed to open device %s\n", DEVICE_FILE);
@@ -148,14 +173,16 @@ int readText(int *textLenDest, unsigned char **textDest) {
 	if(packsLen < ALLOC_LEN)
 		actualLen = packsLen;
 
-	void *text = malloc(actualLen);
-	if(!text)
-		return 11;
-	memcpy(text, packs, actualLen);
-	
-	*textLenDest = actualLen;
-	*textDest = text;
+	void *packsAlloc = malloc(actualLen);
+	if(!packsAlloc)
+		return 5;
+	memcpy(packsAlloc, packs, actualLen);
 
+	CDText *text = makeCDText(packsAlloc, actualLen);
+	if(!text)
+		return 6;
+
+	*dest = text;
 	return 0;
 }
 
@@ -303,4 +330,62 @@ uint16_t toUtf8(unsigned char c) {
 	twoByteUtf8 = (twoByteUtf8 << ONE_BYTE) | firstByteUtf8;
 	return twoByteUtf8;
 }
+
+uint8_t getBlockNum(void *pack) {
+	pack += PACK_OFFSET_TO_BLOCKNUM_BYTE;
+	uint8_t blockNum = (*((uint8_t *)pack) & BLOCK_NUM_MASK) >> 4;
+	return blockNum;
+}
+
+CDText *makeCDText(char *packs, int packsSize) {
+	CDText *text = malloc(sizeof(CDText)); 
+	Block *block = malloc(sizeof(Block));
+	if(!text || !block)
+		return NULL;
+
+	text->packs = packs;
+	text->packsSize = packsSize;
+	text->block = block;
+	return text;
+}
+
+// Modifies CDText *text->block->packs & packsSize to represent the Block blockNum. Does not modify any other members of *text. 
+// If Block blockNum does not exist the CD Text, *text will not be modified in any way.
+// CDText *text should be non-null and returned from makeCDText()
+// blockNum should be in range [0,7], out of that range will behave the same as if Block "blockNum" does not exist
+int setBlock(CDText *text, uint8_t blockNum) {
+	char *thisPack = text->packs;
+	
+	char *blockStart = NULL;
+	uint16_t blockSize = 0;
+	// Search for the start of the target block (the first pack with Block Number blockNum)
+	// Increase blockLen such that it represents the size in bytes of the block
+	// break once the target has been fully iterated through (Blocks in CD Text are contiguous)
+	for(int i=0; i<text->packsSize; i+=PACK_LEN, thisPack+=PACK_LEN) {
+		bool thisPackIsInTargetBlock = getBlockNum(thisPack) == blockNum;
+		
+		if(!blockStart && thisPackIsInTargetBlock)
+			blockStart = thisPack;
+		
+		if(blockStart && thisPackIsInTargetBlock)
+			blockSize += PACK_LEN;
+		else if(blockStart && !thisPackIsInTargetBlock)
+			break; 
+	}
+
+	if(!blockStart)
+		return 1; // do not modify *text if Block blockNum was not found.
+	
+	Block *block = text->block;
+	block->packs = blockStart;
+	block->packsSize = blockSize;
+	return 0;
+}
+
+// updaties the members of *block to reflect block->packs, then frees block->packs.
+// If any allocation of members fails, -1 is returned, and block->packs is stil freed.
+int updateBlock(Block *block) {
+return 0;
+}
+
 
