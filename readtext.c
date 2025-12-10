@@ -82,6 +82,12 @@
 #define UTF8_CONINUATION_BYTE 0b10000000
 #define LOW_ORDER_6BITS 0b00111111
 
+
+typedef struct PackData PackData;
+typedef struct Block Block;
+
+typedef enum ReadTextStatus ReadTextStatus ;
+
 void printPack(unsigned char *pack);
 int readBit(char byte, int bit);
 void printByte(char byte);
@@ -90,41 +96,60 @@ unsigned char *getPackStart(unsigned char *readTextResponse);
 void printTrackTitles(unsigned char *packs, unsigned int packsSize) ;
 void buildCDB(unsigned char cdb[CDB_SIZE]);
 void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb, unsigned char dataBuf[ALLOC_LEN], unsigned char senseBuf[MAX_SENSE]);
-int readText(CDText **dest);
-char *getAlbumName(void *packs, unsigned int packsSize);
-char *getAlbumArtist(void *packs, unsigned int packsSize);
-static void pr(void *str);
+ReadTextStatus readText(CDText *dest);
+char *getAlbumName(PackData packs);
+char *getAlbumArtist(PackData packs);
 uint16_t toUtf8(unsigned char c);
 uint8_t getBlockNum(void *pack);
-CDText *makeCDText(char *packs, int packsSize);
-int setBlock(CDText *text, uint8_t blockNum);
+CDText makeCDText(PackData packs);
+ReadTextStatus setBlock(CDText *text, uint8_t blockNum);
+static PackData makePackData(void *packDataStart, unsigned int packDataSize);
 
-typedef struct Block Block;
-
-struct CDText {
-	char *packs;
-	Block *block;
-	uint16_t packsSize;
+struct PackData {
+	void *start;
+	unsigned int size;
 };
 
 struct Block {
-	char *packs;
+	PackData packs;
 	Track *album;
 	Track **tracks;
-	uint16_t packsSize;
-	uint8_t tracksLen;
+	unsigned int tracksLen;
+};
+
+struct CDText {
+	PackData packs;
+	Block block;
+};
+
+// return values for functions that are publicly available from this file
+enum ReadTextStatus {
+	// general
+	SUCCESS, // make sure this stays first (value 0)
+	FAILED_TO_ALLOCATE_MEMORY,
+
+	// readText()
+	FAILED_TO_OPEN_DEVICE_FILE,
+	FAILED_IOCTL,
+	CDTEXT_DOES_NOT_EXIST,
+	CDTEXT_DATA_EMPTY,
+
+	// setBlock()
+	BLOCKNUM_OUT_OF_RANGE,
+	BLOCKNUM_NOT_FOUND,
+
 };
 
 int main() {
-	CDText *text = NULL;
+	CDText text;
 	if(readText(&text))
 		return 1;
-	if(setBlock(text, 0))
+	if(setBlock(&text, 0))
 		return 2;
-	printf("%d\n", text->packsSize);
-	printf("%d\n", text->block->packsSize);
-	char *albumArtist = getAlbumArtist(text->block->packs, text->block->packsSize);
-	char *albumName = getAlbumName(text->block->packs, text->block->packsSize);
+	printf("%d\n", text.packs.size);
+	printf("%d\n", text.block.packs.size);
+	char *albumArtist = getAlbumArtist(text.block.packs);
+	char *albumName = getAlbumName(text.block.packs);
 	printf("%s\n", albumName);
 	printf("%s\n",albumArtist);
 
@@ -135,11 +160,10 @@ int main() {
 // CDText **dest pointer will be replaced with a memory allocated pointer returned by makeCDText()
 // On failiure, **dest is unmodified
 // returns an error code, 0 is success.
-int readText(CDText **dest) {
+ReadTextStatus readText(CDText *dest) {
 	int fd = open(DEVICE_FILE, O_RDONLY);
 	if(fd == -1) {
-		printf("failed to open device %s\n", DEVICE_FILE);
-		return 1;
+		return FAILED_TO_OPEN_DEVICE_FILE;
 	}
 
 	unsigned char dataBuf[ALLOC_LEN]; 
@@ -151,36 +175,32 @@ int readText(CDText **dest) {
 	buildSgIoHdr(&hdr, cdb, dataBuf, senseBuf);
 
 	if(ioctl(fd, SG_IO, &hdr) == -1) {
-		printf("ioctl failed\n");
-		return 2;
+		return FAILED_IOCTL;
 	}
 
 	if(hdr.sb_len_wr != 0) {
-		printf("There is no CD-Text on this disc.\n");
-		return 3;
+		return CDTEXT_DOES_NOT_EXIST;
 	}
 
 	unsigned int packsLen = getDataLen(dataBuf);
 	if(packsLen <= 2)  {
-		printf("there was no pack data returned\n");
-		return 4;
+		return CDTEXT_DATA_EMPTY;
 	}
 	packsLen -= 2; // There are 2 bytes in the header after the data length field that are not part of pack data.
 	
-	unsigned char *packs = getPackStart(dataBuf);
+	void *packsStart = getPackStart(dataBuf);
 	
-	int actualLen = ALLOC_LEN - 4; // -4 to remove whole header
+	int packDataSize = ALLOC_LEN - 4; // -4 to remove whole header
 	if(packsLen < ALLOC_LEN)
-		actualLen = packsLen;
+		packDataSize = packsLen;
 
-	void *packsAlloc = malloc(actualLen);
+	void *packsAlloc = malloc(packDataSize);
 	if(!packsAlloc)
 		return 5;
-	memcpy(packsAlloc, packs, actualLen);
+	memcpy(packsAlloc, packsStart, packDataSize);
+	PackData packs = makePackData(packsAlloc, packDataSize);
 
-	CDText *text = makeCDText(packsAlloc, actualLen);
-	if(!text)
-		return 6;
+	CDText text = makeCDText(packs);
 
 	*dest = text;
 	return 0;
@@ -224,15 +244,15 @@ unsigned int getDataLen(unsigned char *readTextResponse) {
 	return (MSByte << ONE_BYTE) | LSByte;
 }
 
-char *getAlbumName(void *packs, unsigned int packsSize) {
+char *getAlbumName(PackData packs) {
 	size_t maxNameLen = 32;
 	size_t nameLen = 0;
 	char *albumName = malloc(maxNameLen);
 	if(!albumName)
 		return NULL;
 
-	unsigned char *thisPack = packs;
-	for(int i=0; i<packsSize; i+=PACK_LEN, thisPack+=PACK_LEN) {
+	unsigned char *thisPack = packs.start;
+	for(int i=0; i<packs.size; i+=PACK_LEN, thisPack+=PACK_LEN) {
 		unsigned char id1 = thisPack[0];
 		unsigned char id2 = thisPack[1];
 		if(id1 != TITLE_INDICATOR || id2 != ALBUM_INDICATOR) 
@@ -261,15 +281,15 @@ char *getAlbumName(void *packs, unsigned int packsSize) {
 	return albumName;
 }
 
-char *getAlbumArtist(void *packs, unsigned int packsSize) {
+char *getAlbumArtist(PackData packs) {
 	size_t maxNameLen = 32;
 	size_t nameLen = 0;
 	char *albumName = malloc(maxNameLen);
 	if(!albumName)
 		return NULL;
 
-	unsigned char *thisPack = packs;
-	for(int i=0; i<packsSize; i+=PACK_LEN, thisPack+=PACK_LEN) {
+	unsigned char *thisPack = packs.start;
+	for(int i=0; i<packs.size; i+=PACK_LEN, thisPack+=PACK_LEN) {
 		unsigned char id1 = thisPack[0];
 		unsigned char id2 = thisPack[1];
 		if(id1 != ARTIST_INDICATOR || id2 != ALBUM_INDICATOR) 
@@ -337,31 +357,32 @@ uint8_t getBlockNum(void *pack) {
 	return blockNum;
 }
 
-CDText *makeCDText(char *packs, int packsSize) {
-	CDText *text = malloc(sizeof(CDText)); 
-	Block *block = malloc(sizeof(Block));
-	if(!text || !block)
-		return NULL;
+CDText makeCDText(PackData packs) {
+	CDText text; 
+	Block block;
 
-	text->packs = packs;
-	text->packsSize = packsSize;
-	text->block = block;
+	memset(&block, 0, sizeof(Block));
+
+	text.packs = packs;
+	text.block = block;
 	return text;
 }
 
-// Modifies CDText *text->block->packs & packsSize to represent the Block blockNum. Does not modify any other members of *text. 
-// If Block blockNum does not exist the CD Text, *text will not be modified in any way.
+// Modifies CDText *text->block->packs & packsSize to represent the Block blockNum. 
+// If Block blockNum does not exist the CD Text, or is a status other than SUCCESS is returned, *text will not be modified in any way.
 // CDText *text should be non-null and returned from makeCDText()
-// blockNum should be in range [0,7], out of that range will behave the same as if Block "blockNum" does not exist
-int setBlock(CDText *text, uint8_t blockNum) {
-	char *thisPack = text->packs;
+// blockNum should be in range [0,7],but out of that range will still behave the same as if Block "blockNum" does not exist
+ReadTextStatus setBlock(CDText *text, uint8_t blockNum) {
+	if(blockNum > 7)
+		return BLOCKNUM_OUT_OF_RANGE;
 	
-	char *blockStart = NULL;
+	unsigned char *blockStart = NULL;
 	uint16_t blockSize = 0;
+	unsigned char *thisPack = text->packs.start;
 	// Search for the start of the target block (the first pack with Block Number blockNum)
 	// Increase blockLen such that it represents the size in bytes of the block
 	// break once the target has been fully iterated through (Blocks in CD Text are contiguous)
-	for(int i=0; i<text->packsSize; i+=PACK_LEN, thisPack+=PACK_LEN) {
+	for(int i=0; i<text->packs.size; i+=PACK_LEN, thisPack+=PACK_LEN) {
 		bool thisPackIsInTargetBlock = getBlockNum(thisPack) == blockNum;
 		
 		if(!blockStart && thisPackIsInTargetBlock)
@@ -374,18 +395,30 @@ int setBlock(CDText *text, uint8_t blockNum) {
 	}
 
 	if(!blockStart)
-		return 1; // do not modify *text if Block blockNum was not found.
+		return BLOCKNUM_NOT_FOUND;
 	
-	Block *block = text->block;
-	block->packs = blockStart;
-	block->packsSize = blockSize;
-	return 0;
+	Block block;
+	memset(&block, 0, sizeof(Block));
+	block.packs.start = blockStart;
+	block.packs.size = blockSize;
+
+	// TODO add album and tracks members to block
+	// 	free old  block on success
+	
+	text->block = block;
+	return SUCCESS;
 }
 
-// updaties the members of *block to reflect block->packs, then frees block->packs.
-// If any allocation of members fails, -1 is returned, and block->packs is stil freed.
-int updateBlock(Block *block) {
-return 0;
+PackData makePackData(void *packsStart, unsigned int packsSize) {
+	PackData packData;
+	packData.start = packsStart;
+	packData.size = packsSize;
+
+	return packData;
+}
+
+Track *getAlbum(PackData packs) {
+	return NULL;
 }
 
 
