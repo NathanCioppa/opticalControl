@@ -66,6 +66,8 @@
 #define MAX_CD_TRACK_COUNT 99
 #define PACK_TYPE_TRACK 0x80
 #define PACK_TRACK_NUM_ALBUM 0x00
+#define PACK_TYPE_TOC_INFO 0x88
+#define PACK_TYPE_BLOCK_SIZE_INFO 0x8f
 #define SCSI_GENERIC_INTERFACE_ID 'S'
 #define SG_IO_TIMEOUT 10000
 
@@ -77,6 +79,9 @@
 #define ARTIST_INDICATOR 0x81
 #define BLOCK_NUM_MASK 0b01110000
 #define PACK_OFFSET_TO_BLOCKNUM_BYTE 3
+#define FIRST_TRACK_NUM 5
+#define LAST_TRACK_NUM 6
+
 
 #define UTF8_2BYTE_HEADER 0b11000000
 #define UTF8_CONINUATION_BYTE 0b10000000
@@ -104,6 +109,8 @@ uint8_t getBlockNum(void *pack);
 CDText makeCDText(PackData packs);
 ReadTextStatus setBlock(CDText *text, uint8_t blockNum);
 static PackData makePackData(void *packDataStart, unsigned int packDataSize);
+Track *getAlbum(PackData packs);
+uint16_t getFirstAndLastTrackNum(PackData packs);
 
 struct PackData {
 	void *start;
@@ -113,7 +120,7 @@ struct PackData {
 struct Block {
 	PackData packs;
 	Track *album;
-	Track **tracks;
+	Track *tracks;
 	unsigned int tracksLen;
 };
 
@@ -122,7 +129,7 @@ struct CDText {
 	Block block;
 };
 
-// return values for functions that are publicly available from this file
+// return values for functions that are publicly available from this file's header
 enum ReadTextStatus {
 	// general
 	SUCCESS, // make sure this stays first (value 0)
@@ -148,10 +155,15 @@ int main() {
 		return 2;
 	printf("%d\n", text.packs.size);
 	printf("%d\n", text.block.packs.size);
-	char *albumArtist = getAlbumArtist(text.block.packs);
-	char *albumName = getAlbumName(text.block.packs);
-	printf("%s\n", albumName);
-	printf("%s\n",albumArtist);
+	//char *albumArtist = getAlbumArtist(text.block.packs);
+	//char *albumName = getAlbumName(text.block.packs);
+	printf("HERE\n");
+	printf("%s\n", text.block.album->name);
+	printf("%s\n", text.block.album->artist);
+
+	uint16_t x = getFirstAndLastTrackNum(text.block.packs);
+
+	printTrackTitles(text.block.packs.start, text.block.packs.size);
 
 	return 0;
 
@@ -325,10 +337,13 @@ char *getAlbumArtist(PackData packs) {
 
 void printTrackTitles(unsigned char *packs, unsigned int packsSize) {
 	for(int i=0; i<packsSize; i+=18, packs+=18) {
-		if(packs[0] == PACK_TYPE_TRACK) {
+		if(packs[0] == 0x81/*PACK_TYPE_TRACK*/) {
+			printf("%d ", packs[1]);
 			for(unsigned char *payload = packs+4; payload < packs+16; payload++) {
 				if(*payload == '\0')
 					putchar('\n');
+				else if (*payload == '\t')
+					putchar('#');
 				else
 					putchar((char)*payload);
 			}
@@ -401,6 +416,13 @@ ReadTextStatus setBlock(CDText *text, uint8_t blockNum) {
 	memset(&block, 0, sizeof(Block));
 	block.packs.start = blockStart;
 	block.packs.size = blockSize;
+	
+	Track *album = getAlbum(block.packs);
+	if(!album)
+		return FAILED_TO_ALLOCATE_MEMORY;
+	
+	block.album = album;
+
 
 	// TODO add album and tracks members to block
 	// 	free old  block on success
@@ -418,7 +440,32 @@ PackData makePackData(void *packsStart, unsigned int packsSize) {
 }
 
 Track *getAlbum(PackData packs) {
-	return NULL;
+	char *name = getAlbumName(packs);
+	char *artist = getAlbumArtist(packs);
+	Track *album = malloc(sizeof(Track));
+	
+	if(!album || !artist || !name) {
+		free(name);
+		free(artist);
+		free(album);
+		return NULL;
+	}
+
+	album->name = name;
+	album->artist = artist;
+	return album;
 }
 
-
+uint16_t getFirstAndLastTrackNum(PackData packs) {
+	uint8_t *pack = packs.start;
+	for(int i=0; i<packs.size; i+=PACK_LEN, pack+=PACK_LEN) {
+		if(*pack == PACK_TYPE_BLOCK_SIZE_INFO) {
+			uint16_t ret = pack[LAST_TRACK_NUM];
+			ret <<= ONE_BYTE;
+			ret |= pack[FIRST_TRACK_NUM];
+			printf("NUMS: %d %d\n", pack[FIRST_TRACK_NUM], pack[LAST_TRACK_NUM]);
+			return ret;
+		}
+	}
+	return 0;
+}
