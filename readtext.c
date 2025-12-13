@@ -79,6 +79,8 @@
 #define ARTIST_INDICATOR 0x81
 #define BLOCK_NUM_MASK 0b01110000
 #define PACK_OFFSET_TO_BLOCKNUM_BYTE 3
+#define PACK_OFFSET_TO_CHARACTER_POSITON_INDICATOR_BYTE 3
+#define CHARACTER_POSITION_INDICATOR_MASK 0b00001111
 #define FIRST_TRACK_NUM 5
 #define LAST_TRACK_NUM 6
 
@@ -87,9 +89,12 @@
 #define UTF8_CONINUATION_BYTE 0b10000000
 #define LOW_ORDER_6BITS 0b00111111
 
+#define INITAL_POOL_SIZE 256
+
 
 typedef struct PackData PackData;
 typedef struct Block Block;
+typedef struct TrackNumRange TrackNumRange;
 
 typedef enum ReadTextStatus ReadTextStatus ;
 
@@ -110,24 +115,36 @@ CDText makeCDText(PackData packs);
 ReadTextStatus setBlock(CDText *text, uint8_t blockNum);
 static PackData makePackData(void *packDataStart, unsigned int packDataSize);
 Track *getAlbum(PackData packs);
-uint16_t getFirstAndLastTrackNum(PackData packs);
+TrackNumRange getTrackNumRange(PackData packs);
+char *makeTrackNamesPool(PackData packs, uint8_t trackCount);
+char *makeArtistNamesPool(PackData packs, uint8_t trackCount);
+uint8_t getCharacterPositionIndicator(uint8_t *pack);
 
 struct PackData {
 	void *start;
 	unsigned int size;
 };
 
+struct TrackNumRange {
+	uint8_t count;
+	uint8_t first;
+	uint8_t last;
+};
+
 struct Block {
 	PackData packs;
 	Track *album;
 	Track *tracks;
-	unsigned int tracksLen;
+	TrackNumRange range;
+	char *trackNamesPool;
+	char *trackArtistsPool;
 };
 
 struct CDText {
 	PackData packs;
 	Block block;
 };
+
 
 // return values for functions that are publicly available from this file's header
 enum ReadTextStatus {
@@ -161,9 +178,21 @@ int main() {
 	printf("%s\n", text.block.album->name);
 	printf("%s\n", text.block.album->artist);
 
-	uint16_t x = getFirstAndLastTrackNum(text.block.packs);
+	TrackNumRange x = getTrackNumRange(text.block.packs);
+	printf("Tracks: %d\n", x.count);
 
-	printTrackTitles(text.block.packs.start, text.block.packs.size);
+	char *z = makeTrackNamesPool(text.block.packs, x.count);
+	int n=0;
+	while(n<x.count) {
+		if(*z == '\0') {
+			putchar('|');
+			n++;
+		}
+		else
+			putchar(*z);
+		z++;
+	}
+	//printTrackTitles(text.block.packs.start, text.block.packs.size);
 
 	return 0;
 
@@ -416,6 +445,8 @@ ReadTextStatus setBlock(CDText *text, uint8_t blockNum) {
 	memset(&block, 0, sizeof(Block));
 	block.packs.start = blockStart;
 	block.packs.size = blockSize;
+
+	block.range = getTrackNumRange(block.packs);
 	
 	Track *album = getAlbum(block.packs);
 	if(!album)
@@ -456,16 +487,121 @@ Track *getAlbum(PackData packs) {
 	return album;
 }
 
-uint16_t getFirstAndLastTrackNum(PackData packs) {
+// Returns an array of Track of size trackCount.
+// Typically trackCount is determined by TrackNumRange.count returned from getTrackNumRange(packs), where packs is identical to packs as passed to this function.
+// Returns NULL if memory fails to be allocated.
+// The returned Track array may be NULL terminated earlier than trackCount if trackCount is not actually accurate to the number of tracks.
+// 	For a well formatted CD Text, that should never happen. 
+// If trackCount is correct, the array will not be NULL terminated as it's length will be correctly represented by trackCount.
+Track *getTracks(PackData packs, uint8_t trackCount) {
+	Track *tracks = calloc(trackCount, sizeof(Track));
+
+	char *trackNamesPool = makeTrackNamesPool(packs, trackCount);
+
+	if(!tracks || !trackNamesPool) {
+		free(tracks);
+		free(trackNamesPool);
+		return NULL;
+	}
+	return tracks;
+}
+
+// Returns a TrackNumRange that is properly set to reflect the Block Size Info of packs.
+// if Block Size Info cannot be found for packs, all members of returned TrackNumRange are set to 0.
+TrackNumRange getTrackNumRange(PackData packs) {
 	uint8_t *pack = packs.start;
+	TrackNumRange range;
 	for(int i=0; i<packs.size; i+=PACK_LEN, pack+=PACK_LEN) {
 		if(*pack == PACK_TYPE_BLOCK_SIZE_INFO) {
-			uint16_t ret = pack[LAST_TRACK_NUM];
-			ret <<= ONE_BYTE;
-			ret |= pack[FIRST_TRACK_NUM];
-			printf("NUMS: %d %d\n", pack[FIRST_TRACK_NUM], pack[LAST_TRACK_NUM]);
-			return ret;
+			range.first = pack[FIRST_TRACK_NUM];
+			range.last = pack[LAST_TRACK_NUM];
+			int count = ((int)range.last) - ((int)range.first - 1);
+			if(count <= 0)
+				range.count = 0;
+			else
+				range.count = (uint8_t)count;
+			
+			return range;
 		}
 	}
-	return 0;
+	memset(&range, 0, sizeof(TrackNumRange));
+	return range;
 }
+
+uint8_t getCharacterPositionIndicator(uint8_t *pack) {
+	return pack[PACK_OFFSET_TO_CHARACTER_POSITON_INDICATOR_BYTE] & CHARACTER_POSITION_INDICATOR_MASK;
+}
+
+char *makeTrackNamesPool(PackData packs, uint8_t trackCount) {
+	char *trackNames;
+	int maxPoolSize = INITAL_POOL_SIZE;
+	if(trackCount == 0 || !(trackNames = malloc(maxPoolSize)) )
+		return NULL;
+
+	int iPool = 0;
+	uint8_t stringsFound = 0;
+	// find the start of the track titles info
+	uint8_t *thisPack = packs.start;
+	bool hasPassedAlbum = false;
+	for(int i=0; i<packs.size; i+=PACK_LEN, thisPack+=PACK_LEN) {
+		if(*thisPack != TITLE_INDICATOR)
+			continue;
+		for(int j=0; j<TEXT_DATA_FIELD_LEN && stringsFound < trackCount; j++) {
+			unsigned char c = thisPack[TEXT_DATA_FIELD_START + j];
+			uint8_t id2 = thisPack[1];
+			if(id2 == ALBUM_INDICATOR && !hasPassedAlbum) {
+				hasPassedAlbum = c == '\0';
+				continue;
+			}
+			else if (id2 != ALBUM_INDICATOR || hasPassedAlbum) {
+				// add this character into the pool.
+				// make space in the pool if needed.
+				if(iPool >= maxPoolSize - 2) {
+					maxPoolSize *= 2;
+					char *temp = realloc(trackNames, maxPoolSize);
+					if(!temp) {
+						free(trackNames);
+						return NULL;
+					}
+					trackNames = temp;
+				}
+				uint16_t utf8Char = toUtf8(c);
+				trackNames[iPool++] = (char)utf8Char;
+				if(c > 127)
+					trackNames[iPool++] = (char)(utf8Char >> ONE_BYTE);
+				else if(c == '\0')
+					stringsFound++;
+			}
+		}
+	}
+	
+	// if less name strings were found than expected, add empty strings to the pool unitl it has the expected ammount
+	int stringsLeftToAdd = (int)trackCount - (int)stringsFound;
+	if(stringsLeftToAdd < 0) {
+		free(trackNames);
+		printf("trackCount was less than stringsFound in makeTrackNamesPool(), which should be impossible\n");
+		return NULL;
+	}
+	// make sure theres enough space
+	if(iPool+stringsLeftToAdd >= maxPoolSize) {
+		maxPoolSize += stringsLeftToAdd+1;
+		char *temp = realloc(trackNames, maxPoolSize);
+		if(!temp) {
+			free(trackNames);
+			return NULL;
+		}
+		trackNames = temp;
+	}
+	for(int i=0; i<stringsLeftToAdd; i++) {
+		trackNames[iPool++] = '\0';
+	}
+	return trackNames;
+}
+
+
+char *makeArtistNamesPool(PackData packs, uint8_t trackCount) {
+	return NULL;
+}
+
+
+
