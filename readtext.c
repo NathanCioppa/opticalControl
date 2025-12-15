@@ -44,6 +44,8 @@
 #include <stdbool.h>
 #include "cd.h"
 
+// TODO organize macro definitions
+
 // Command Descriptor Block components for READ TOC/PMA/ATIP 
 // Documentation in MMC-3 Manual 6.25 READ TOC/PMA/ATIP Command
 #define CDB_SIZE 10
@@ -57,6 +59,7 @@
 #define iFORMAT 2
 #define iALLOC_LEN_MSBYTE 7
 #define iALLOC_LEN_LSBYTE 8
+
 
 
 #define DEVICE_FILE "/dev/sg0"
@@ -96,29 +99,22 @@ typedef struct PackData PackData;
 typedef struct Block Block;
 typedef struct TrackNumRange TrackNumRange;
 
-typedef enum ReadTextStatus ReadTextStatus ;
-
-void printPack(unsigned char *pack);
-int readBit(char byte, int bit);
-void printByte(char byte);
-unsigned int getDataLen(unsigned char *readTextResponse);
-unsigned char *getPackStart(unsigned char *readTextResponse);
-void printTrackTitles(unsigned char *packs, unsigned int packsSize) ;
-void buildCDB(unsigned char cdb[CDB_SIZE]);
-void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb, unsigned char dataBuf[ALLOC_LEN], unsigned char senseBuf[MAX_SENSE]);
-ReadTextStatus readText(CDText *dest);
-char *getAlbumName(PackData packs);
-char *getAlbumArtist(PackData packs);
+CDText makeCDText(PackData packs);
+unsigned int getDataLen(uint8_t *readTextResponse);
+void *getPackStart(void *readTextResponse);
+void buildCDB(uint8_t cdb[CDB_SIZE]);
+void buildSgIoHdr(sg_io_hdr_t *hdr, uint8_t *cdb, uint8_t dataBuf[ALLOC_LEN], uint8_t senseBuf[MAX_SENSE]);
 uint16_t toUtf8(unsigned char c);
 uint8_t getBlockNum(void *pack);
-CDText makeCDText(PackData packs);
-ReadTextStatus setBlock(CDText *text, uint8_t blockNum);
-static PackData makePackData(void *packDataStart, unsigned int packDataSize);
+PackData makePackData(void *packDataStart, unsigned int packDataSize);
 Track *getAlbum(PackData packs);
 TrackNumRange getTrackNumRange(PackData packs);
 char *makeTrackInfoPool(PackData packs, uint8_t trackCount, char **strings, uint8_t typeIndicator);
 uint8_t getCharacterPositionIndicator(uint8_t *pack);
 Track *getTracks(PackData packs, uint8_t trackCount);
+char *makeAlbumInfo(PackData packs, uint8_t typeIndicator);
+
+
 
 struct PackData {
 	void *start;
@@ -144,58 +140,33 @@ struct CDText {
 };
 
 
-// return values for functions that are publicly available from this file's header
-enum ReadTextStatus {
-	// general
-	SUCCESS, // make sure this stays first (value 0)
-	FAILED_TO_ALLOCATE_MEMORY,
-
-	// readText()
-	FAILED_TO_OPEN_DEVICE_FILE,
-	FAILED_IOCTL,
-	CDTEXT_DOES_NOT_EXIST,
-	CDTEXT_DATA_EMPTY,
-
-	// setBlock()
-	BLOCKNUM_OUT_OF_RANGE,
-	BLOCKNUM_NOT_FOUND,
-
-};
 
 int main() {
 	CDText text;
-	if(readText(&text))
+	if(readText(&text, 0))
 		return 1;
-	if(setBlock(&text, 0))
-		return 2;
-	printf("%s\n", text.block.album->name);
-	printf("%s\n", text.block.album->artist);
 
-	TrackNumRange x = getTrackNumRange(text.block.packs);
-	Track *tracks = getTracks(text.block.packs, x.count);
-
-	text.block.range = x;
-	text.block.tracks = tracks;
-
+	printf("Album: %s, %s\n", text.block.album->title, text.block.album->artist);
 	for(int i=0; i<text.block.range.count; i++) {
-		printf("Track %d: %s, %s\n", i+1, tracks[i].name, tracks[i].artist);
+		printf("Track %d: %s, %s\n", i+1, text.block.tracks[i].title, text.block.tracks[i].artist);
 	}
 
 	return 0;
 }
 
-// CDText **dest pointer will be replaced with a memory allocated pointer returned by makeCDText()
-// On failiure, **dest is unmodified
+// Changes the value at *dest to be a valid CDText struct.
+// On failiure, *dest is unmodified
 // returns an error code, 0 is success.
-ReadTextStatus readText(CDText *dest) {
+// most reliable value for defaultBlockNum is 0
+ReadTextStatus readText(CDText *dest, uint8_t defaultBlockNum) {
 	int fd = open(DEVICE_FILE, O_RDONLY);
 	if(fd == -1) {
 		return FAILED_TO_OPEN_DEVICE_FILE;
 	}
 
-	unsigned char dataBuf[ALLOC_LEN]; 
-	unsigned char senseBuf[MAX_SENSE];
-	unsigned char cdb[CDB_SIZE];
+	uint8_t dataBuf[ALLOC_LEN]; 
+	uint8_t senseBuf[MAX_SENSE];
+	uint8_t cdb[CDB_SIZE];
 	buildCDB(cdb);
 
 	sg_io_hdr_t hdr;
@@ -204,7 +175,6 @@ ReadTextStatus readText(CDText *dest) {
 	if(ioctl(fd, SG_IO, &hdr) == -1) {
 		return FAILED_IOCTL;
 	}
-
 	if(hdr.sb_len_wr != 0) {
 		return CDTEXT_DOES_NOT_EXIST;
 	}
@@ -216,24 +186,25 @@ ReadTextStatus readText(CDText *dest) {
 	packsLen -= 2; // There are 2 bytes in the header after the data length field that are not part of pack data.
 	
 	void *packsStart = getPackStart(dataBuf);
-	
 	int packDataSize = ALLOC_LEN - 4; // -4 to remove whole header
 	if(packsLen < ALLOC_LEN)
 		packDataSize = packsLen;
 
 	void *packsAlloc = malloc(packDataSize);
 	if(!packsAlloc)
-		return 5;
+		return FAILED_TO_ALLOCATE_MEMORY;
 	memcpy(packsAlloc, packsStart, packDataSize);
+	
 	PackData packs = makePackData(packsAlloc, packDataSize);
-
 	CDText text = makeCDText(packs);
 
-	*dest = text;
-	return 0;
+	ReadTextStatus status = setBlock(&text, defaultBlockNum);
+	if(status == SUCCESS)
+		*dest = text;
+	return status;
 }
 
-void buildCDB(unsigned char cdb[CDB_SIZE]) {
+void buildCDB(uint8_t cdb[CDB_SIZE]) {
 	memset(cdb, 0, CDB_SIZE);
 	cdb[iOPCODE] = OPCODE;
 	cdb[iALLOC_LEN_MSBYTE] = ALLOC_MSBYTE;
@@ -241,7 +212,7 @@ void buildCDB(unsigned char cdb[CDB_SIZE]) {
 	cdb[iFORMAT] = FORMAT;
 }
 
-void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb,unsigned char dataBuf[ALLOC_LEN], unsigned char senseBuf[MAX_SENSE]) {
+void buildSgIoHdr(sg_io_hdr_t *hdr, uint8_t cdb[CDB_SIZE], uint8_t dataBuf[ALLOC_LEN], uint8_t senseBuf[MAX_SENSE]) {
 	memset(hdr, 0, sizeof(sg_io_hdr_t));
 	
 	hdr->interface_id = SCSI_GENERIC_INTERFACE_ID;
@@ -255,116 +226,59 @@ void buildSgIoHdr(sg_io_hdr_t *hdr, unsigned char *cdb,unsigned char dataBuf[ALL
 	hdr->timeout = SG_IO_TIMEOUT;
 }
 
-int readBit(char byte, int bit) {
-	return (byte >> bit) & 1;
-}
-
-unsigned char *getPackStart(unsigned char *readTextResponse) {
-	return readTextResponse + READ_TOC_HDR_SIZE;
+void *getPackStart(void *readTextResponse) {
+	return readTextResponse+READ_TOC_HDR_SIZE;
 }
 
 // *readTextResponse is the data recieved from READ TOC/PMA/ATIP with format 0101b (MMC-3 Manual)
 // As described in MMC-3 Manual, the first two bytes of the response are the size of the CD-Text data. 
-unsigned int getDataLen(unsigned char *readTextResponse) {
-	unsigned int MSByte = (unsigned int)(readTextResponse[0]);
-	unsigned int LSByte = (unsigned int)(readTextResponse[1]);
+unsigned int getDataLen(uint8_t *readTextResponse) {
+	unsigned int MSByte = (uint8_t)(readTextResponse[0]);
+	unsigned int LSByte = (uint8_t)(readTextResponse[1]);
 	return (MSByte << ONE_BYTE) | LSByte;
 }
 
-char *getAlbumName(PackData packs) {
-	size_t maxNameLen = 32;
-	size_t nameLen = 0;
-	char *albumName = malloc(maxNameLen);
-	if(!albumName)
+
+// TODO refactor this to use similar names to makeTrackInfoPool()
+char *makeAlbumInfo(PackData packs, uint8_t typeIndicator) {
+	size_t maxStringLen = 32;
+	size_t stringLen = 0;
+	char *string = malloc(maxStringLen);
+	if(!string)
 		return NULL;
 
 	unsigned char *thisPack = packs.start;
 	for(int i=0; i<packs.size; i+=PACK_LEN, thisPack+=PACK_LEN) {
 		unsigned char id1 = thisPack[0];
 		unsigned char id2 = thisPack[1];
-		if(id1 != TITLE_INDICATOR || id2 != ALBUM_INDICATOR) 
-			continue; // this is not album name info
-
-		// iterate through just the portion of the pack that has the text data (everything else is metadata)
-		for(int iData = TEXT_DATA_FIELD_START; iData < TEXT_DATA_FIELD_START+TEXT_DATA_FIELD_LEN; iData++, nameLen++) {
-			// resize *albumName if needed
-			if(nameLen >= maxNameLen-1) {
-				maxNameLen *= 2;
-				char *temp = realloc(albumName, maxNameLen*sizeof(wchar_t));
-				if(temp)
-					albumName = temp;
-				else {
-					free(albumName);
-					return NULL;
-				};
-			}
-
-			albumName[nameLen] = thisPack[iData];
-			if(albumName[nameLen] == '\0') // can return early since the string would terminate here anyway
-				return albumName;
-		}
-	}
-	albumName[nameLen] = '\0'; // ensure is termainated as a string
-	return albumName;
-}
-
-char *getAlbumArtist(PackData packs) {
-	size_t maxNameLen = 32;
-	size_t nameLen = 0;
-	char *albumName = malloc(maxNameLen);
-	if(!albumName)
-		return NULL;
-
-	unsigned char *thisPack = packs.start;
-	for(int i=0; i<packs.size; i+=PACK_LEN, thisPack+=PACK_LEN) {
-		unsigned char id1 = thisPack[0];
-		unsigned char id2 = thisPack[1];
-		if(id1 != ARTIST_INDICATOR || id2 != ALBUM_INDICATOR) 
+		if(id1 != typeIndicator || id2 != ALBUM_INDICATOR) 
 			continue; // this is not album artist info
 
 		// iterate through just the portion of the pack that has the text data (everything else is metadata)
-		for(int iData = TEXT_DATA_FIELD_START; iData < TEXT_DATA_FIELD_START+TEXT_DATA_FIELD_LEN; iData++, nameLen++) {
+		for(int iData = TEXT_DATA_FIELD_START; iData < TEXT_DATA_FIELD_START+TEXT_DATA_FIELD_LEN; iData++, stringLen++) {
 			// resize *albumName if needed, 2 since in it possible that a two-byte UTF character will be added
-			if(nameLen >= maxNameLen-2) {
-				maxNameLen *= 2;
-				char *temp = realloc(albumName, maxNameLen);
-				if(temp)
-					albumName = temp;
-				else {
-					free(albumName);
-					return NULL;
-				};
+			if(stringLen >= maxStringLen-2) {
+				maxStringLen *= 2;
+				char *temp = realloc(string, maxStringLen);
+				if(!temp) {
+					free(string);
+					return NULL; 
+				}
+				string = temp;
 			}
 
 			unsigned char c = thisPack[iData];
 			uint16_t utf8Char = toUtf8(c);
-			albumName[nameLen] = (char)utf8Char;
+			string[stringLen] = (char)utf8Char;
 			if(c >= 128)
-				albumName[++nameLen] = (char)(utf8Char >> ONE_BYTE); 
+				string[++stringLen] = (char)(utf8Char >> ONE_BYTE); 
 
-			if(albumName[nameLen] == '\0') // can return early since the string would terminate here anyway
-				return albumName;
+			if(string[stringLen] == '\0') // can return early since the string would terminate here anyway
+				return string;
 		}
 	}
-	albumName[nameLen] = '\0'; // ensure is termainated as a string
-	return albumName;
-}
-
-void printTrackTitles(unsigned char *packs, unsigned int packsSize) {
-	for(int i=0; i<packsSize; i+=18, packs+=18) {
-		if(packs[0] == 0x81/*PACK_TYPE_TRACK*/) {
-			printf("%d ", packs[1]);
-			for(unsigned char *payload = packs+4; payload < packs+16; payload++) {
-				if(*payload == '\0')
-					putchar('\n');
-				else if (*payload == '\t')
-					putchar('#');
-				else
-					putchar((char)*payload);
-			}
-		}
-	}
-
+	string[stringLen] = '\0'; // ensure is termainated as a string
+	return string;
 }
 
 uint16_t toUtf8(unsigned char c) {
@@ -372,9 +286,9 @@ uint16_t toUtf8(unsigned char c) {
 		return (uint16_t)c;
 
 	// two highest order bits of c become the lowest order bits of the UTF8 header byte
-	unsigned char firstByteUtf8 = UTF8_2BYTE_HEADER | (c >> 6);
+	uint8_t firstByteUtf8 = UTF8_2BYTE_HEADER | (c >> 6);
 	// remaining 6 low order bits become low order bits of the UTF8 continuation byte
-	unsigned char secondByteUtf8 = UTF8_CONINUATION_BYTE | (c & LOW_ORDER_6BITS);
+	uint8_t secondByteUtf8 = UTF8_CONINUATION_BYTE | (c & LOW_ORDER_6BITS);
 
 	uint16_t twoByteUtf8 = secondByteUtf8;
 	twoByteUtf8 = (twoByteUtf8 << ONE_BYTE) | firstByteUtf8;
@@ -383,10 +297,10 @@ uint16_t toUtf8(unsigned char c) {
 
 uint8_t getBlockNum(void *pack) {
 	pack += PACK_OFFSET_TO_BLOCKNUM_BYTE;
-	uint8_t blockNum = (*((uint8_t *)pack) & BLOCK_NUM_MASK) >> 4;
-	return blockNum;
+	return (*((uint8_t *)pack) & BLOCK_NUM_MASK) >> 4;
 }
 
+// TODO add a meaningful comment to this
 CDText makeCDText(PackData packs) {
 	CDText text; 
 	Block block;
@@ -400,7 +314,7 @@ CDText makeCDText(PackData packs) {
 
 // Modifies CDText *text->block->packs & packsSize to represent the Block blockNum. 
 // If Block blockNum does not exist the CD Text, or is a status other than SUCCESS is returned, *text will not be modified in any way.
-// CDText *text should be non-null and returned from makeCDText()
+// CDText *text should be non-null and point to CDText returned from makeCDText()
 // blockNum should be in range [0,7],but out of that range will still behave the same as if Block "blockNum" does not exist
 ReadTextStatus setBlock(CDText *text, uint8_t blockNum) {
 	if(blockNum > 7)
@@ -435,15 +349,13 @@ ReadTextStatus setBlock(CDText *text, uint8_t blockNum) {
 	block.range = getTrackNumRange(block.packs);
 	
 	Track *album = getAlbum(block.packs);
-	if(!album)
+	Track *tracks = getTracks(block.packs, block.range.count);
+	if(!album || !tracks)
 		return FAILED_TO_ALLOCATE_MEMORY;
 	
 	block.album = album;
+	block.tracks = tracks;
 
-
-	// TODO add album and tracks members to block
-	// 	free old  block on success
-	
 	text->block = block;
 	return SUCCESS;
 }
@@ -457,19 +369,20 @@ PackData makePackData(void *packsStart, unsigned int packsSize) {
 }
 
 Track *getAlbum(PackData packs) {
-	char *name = getAlbumName(packs);
-	char *artist = getAlbumArtist(packs);
+	char *title = makeAlbumInfo(packs, TITLE_INDICATOR);
+	char *artist = makeAlbumInfo(packs, ARTIST_INDICATOR);
 	Track *album = malloc(sizeof(Track));
 	
-	if(!album || !artist || !name) {
-		free(name);
+	if(!album || !artist || !title) {
+		free(title);
 		free(artist);
 		free(album);
 		return NULL;
 	}
 
-	album->name = name;
+	album->title = title;
 	album->artist = artist;
+
 	return album;
 }
 
@@ -496,7 +409,7 @@ Track *getTracks(PackData packs, uint8_t trackCount) {
 	}
 
 	for(uint8_t i=0; i<trackCount; i++) {
-		tracks[i].name = titles[i];
+		tracks[i].title = titles[i];
 		tracks[i].artist = artists[i];
 	}
 
@@ -532,17 +445,17 @@ uint8_t getCharacterPositionIndicator(uint8_t *pack) {
 // the returned char* should be the same as strings[0], assuming a non NULL response.
 char *makeTrackInfoPool(PackData packs, uint8_t trackCount, char **strings ,uint8_t typeIndicator) {
 	char *poolStrings;
-	int maxPoolSize = INITAL_POOL_SIZE;
+	size_t maxPoolSize = INITAL_POOL_SIZE;
 	if(trackCount == 0 || !(poolStrings = malloc(maxPoolSize)) )
 		return NULL;
 
-	int iPool = 0;
+	size_t iPool = 0;
 	uint8_t stringsFound = 0;
 	// find the start of the track titles info
 	uint8_t *thisPack = packs.start;
 	bool hasPassedAlbum = false;
 	bool isNewString = true;
-	for(int i=0; i<packs.size; i+=PACK_LEN, thisPack+=PACK_LEN) {
+	for(size_t i=0; i<packs.size; i+=PACK_LEN, thisPack+=PACK_LEN) {
 		if(*thisPack != typeIndicator)
 			continue;
 		for(int j=0; j<TEXT_DATA_FIELD_LEN && stringsFound < trackCount; j++) {

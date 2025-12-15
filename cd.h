@@ -1,19 +1,19 @@
 
+#ifndef CD_H
+#define CD_H
+
+#include "readtext.h"
+
 typedef struct CD CD;
-typedef struct CDText CDText;
 typedef struct Track Track;
 
 struct CD {
 	CDText *text;
-	int tracks;
 };
 
 struct Track {
-	char *name;
+	char *title;
 	char *artist;
 };
 
-
-
-
-
+#endif
