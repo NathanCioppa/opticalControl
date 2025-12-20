@@ -113,7 +113,8 @@ char *makeTrackInfoPool(PackData packs, uint8_t trackCount, char **strings, uint
 uint8_t getCharacterPositionIndicator(uint8_t *pack);
 Track *getTracks(PackData packs, uint8_t trackCount);
 char *makeAlbumInfo(PackData packs, uint8_t typeIndicator);
-
+void destroyTracks(Track *tracks);
+void destroyCDText(CDText text);
 
 
 struct PackData {
@@ -150,6 +151,8 @@ int main() {
 	for(int i=0; i<text.block.range.count; i++) {
 		printf("Track %d: %s, %s\n", i+1, text.block.tracks[i].title, text.block.tracks[i].artist);
 	}
+
+	destroyCDText(text);
 
 	return 0;
 }
@@ -238,12 +241,12 @@ unsigned int getDataLen(uint8_t *readTextResponse) {
 	return (MSByte << ONE_BYTE) | LSByte;
 }
 
-
-// TODO refactor this to use similar names to makeTrackInfoPool()
+// typeIndicator should be one of the indicators defined in MMC-3 Manual table J.2
+// the indicators that this code actually uses will be defined as macros
 char *makeAlbumInfo(PackData packs, uint8_t typeIndicator) {
-	size_t maxStringLen = 32;
-	size_t stringLen = 0;
-	char *string = malloc(maxStringLen);
+	size_t stringAllocSize = 32;
+	size_t iString = 0;
+	char *string = malloc(stringAllocSize);
 	if(!string)
 		return NULL;
 
@@ -255,11 +258,11 @@ char *makeAlbumInfo(PackData packs, uint8_t typeIndicator) {
 			continue; // this is not album artist info
 
 		// iterate through just the portion of the pack that has the text data (everything else is metadata)
-		for(int iData = TEXT_DATA_FIELD_START; iData < TEXT_DATA_FIELD_START+TEXT_DATA_FIELD_LEN; iData++, stringLen++) {
+		for(int iData = TEXT_DATA_FIELD_START; iData < TEXT_DATA_FIELD_START+TEXT_DATA_FIELD_LEN; iData++, iString++) {
 			// resize *albumName if needed, 2 since in it possible that a two-byte UTF character will be added
-			if(stringLen >= maxStringLen-2) {
-				maxStringLen *= 2;
-				char *temp = realloc(string, maxStringLen);
+			if(iString >=stringAllocSize-2) {
+				stringAllocSize *= 2;
+				char *temp = realloc(string, stringAllocSize);
 				if(!temp) {
 					free(string);
 					return NULL; 
@@ -269,15 +272,15 @@ char *makeAlbumInfo(PackData packs, uint8_t typeIndicator) {
 
 			unsigned char c = thisPack[iData];
 			uint16_t utf8Char = toUtf8(c);
-			string[stringLen] = (char)utf8Char;
+			string[iString] = (char)utf8Char;
 			if(c >= 128)
-				string[++stringLen] = (char)(utf8Char >> ONE_BYTE); 
+				string[++iString] = (char)(utf8Char >> ONE_BYTE); 
 
-			if(string[stringLen] == '\0') // can return early since the string would terminate here anyway
+			if(string[iString] == '\0') // can return early since the string would terminate here anyway
 				return string;
 		}
 	}
-	string[stringLen] = '\0'; // ensure is termainated as a string
+	string[iString] = '\0'; // ensure is termainated as a string
 	return string;
 }
 
@@ -300,7 +303,8 @@ uint8_t getBlockNum(void *pack) {
 	return (*((uint8_t *)pack) & BLOCK_NUM_MASK) >> 4;
 }
 
-// TODO add a meaningful comment to this
+// packs argument should represent the full pack data (excluding headers) from the Read TOC MMC command
+// the returned value is not valid for usage intil it has been passed to a successful call to setBlock()
 CDText makeCDText(PackData packs) {
 	CDText text; 
 	Block block;
@@ -316,6 +320,7 @@ CDText makeCDText(PackData packs) {
 // If Block blockNum does not exist the CD Text, or is a status other than SUCCESS is returned, *text will not be modified in any way.
 // CDText *text should be non-null and point to CDText returned from makeCDText()
 // blockNum should be in range [0,7],but out of that range will still behave the same as if Block "blockNum" does not exist
+// Note that this function does not allocate any memory; the pointer inside of text->block that is set simply points into memory alredy allocated for text->packs
 ReadTextStatus setBlock(CDText *text, uint8_t blockNum) {
 	if(blockNum > 7)
 		return BLOCKNUM_OUT_OF_RANGE;
@@ -442,6 +447,10 @@ uint8_t getCharacterPositionIndicator(uint8_t *pack) {
 	return pack[PACK_OFFSET_TO_CHARACTER_POSITON_INDICATOR_BYTE] & CHARACTER_POSITION_INDICATOR_MASK;
 }
 
+// allocates a contiguous block of memory that contains all the strings of type defined by typeIndicator argument
+// 	ex. if typeIndicator is TITLE_INDICATOR, the allocated block has all the packs's track titles
+// returns a pointer to the block of memory
+// **strings should be an array large enough to hold trackCount pointers, those pointers are the start of each string in the returned char*
 // the returned char* should be the same as strings[0], assuming a non NULL response.
 char *makeTrackInfoPool(PackData packs, uint8_t trackCount, char **strings ,uint8_t typeIndicator) {
 	char *poolStrings;
@@ -521,4 +530,16 @@ char *makeTrackInfoPool(PackData packs, uint8_t trackCount, char **strings ,uint
 	return poolStrings;
 }
 
+// free all heap allocated memory being used by text. Using text after this call has undefined behavior.
+// readText() is (or at least should be) implemented such that this funcion can properly free CDText returned from it.
+void destroyCDText(CDText text) {
+	free(text.packs.start);
+	destroyTracks(text.block.album);
+	destroyTracks(text.block.tracks);
+}
 
+void destroyTracks(Track *tracks) {
+	free(tracks->title);
+	free(tracks->artist);
+	free(tracks);
+} 
