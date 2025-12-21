@@ -1,6 +1,19 @@
-#define READ_TOC_SUCCESS 0
-#define NO_TOC 1
-#define TOC_IOCTL_FAIL 2
 
-int readTOC(int *trackCount);
+#ifndef READ_TOC_H
+#define READ_TOC_H
 
+typedef struct TOC TOC;
+
+
+typedef enum READ_TOC_STATUS {
+	SUCCESS,
+	FAILED_TO_ALLOCATE_MEMORY,
+	NO_TOC_DATA_FOUND,
+	FAILED_TO_OPEN_DEVICE,
+	IOCTL_FAIL,
+	BAD_SENSE_DATA,
+} READ_TOC_STATUS;
+
+READ_TOC_STATUS readTOC(TOC *dest);
+
+#endif

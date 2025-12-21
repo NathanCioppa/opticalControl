@@ -114,7 +114,6 @@ uint8_t getCharacterPositionIndicator(uint8_t *pack);
 Track *getTracks(PackData packs, uint8_t trackCount);
 char *makeAlbumInfo(PackData packs, uint8_t typeIndicator);
 void destroyTracks(Track *tracks);
-void destroyCDText(CDText text);
 
 
 struct PackData {

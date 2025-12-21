@@ -26,5 +26,6 @@ typedef enum ReadTextStatus {
 
 ReadTextStatus readText(CDText *dest, uint8_t defaultBlockNum);
 ReadTextStatus setBlock(CDText *text, uint8_t blockNum);
+void destroyCDText(CDText text);
 
 #endif
