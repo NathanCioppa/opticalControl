@@ -17,23 +17,46 @@
 #define FORMAT 0x00
 #define iALLOC_LEN_LSBYTE 8 // index of least significant byte of allocation length in cdb
 #define iALLOC_LEN_MSBYTE 7 // index of most significant byte of allocation length in cdb
-#define ALLOC_LEN 796 // max number of tracks is 99, each track descriptor is 8 bytes, response header is 4 bytes.
-		      // (99 * 8) + 4 = 796
+// Make sure ALLOC_LEN is sufficiently large to accomidate all tracks, an error will be given if not.
+#define ALLOC_LEN 804 // max number of tracks is 99, plus 1 descriptor for start of lead out (track 0xAA)
+		      // each track descriptor is 8 bytes, response header is 4 bytes.
+		      // (100 * 8) + 4 = 804
 
 #define DEVICE_FILE "/dev/sg0"
 #define SCSI_GENERIC_INTERFACE_ID 'S'
 #define MAX_SENSE_BUF_LEN 64
 
 #define ONE_BYTE 8
+#define TRACK_DESCRIPTOR_SIZE 8	
+#define FIRST_TRACK_NUM 2
+#define LAST_TRACK_NUM 3
+#define RESPONSE_HEADER_SIZE 4
+#define REPRESENTED_HEADER_SIZE 2
+#define CONTROL_MASK 0b00001111
 
-
-uint16_t getAllocLen(uint8_t *readTocResponse);
+uint16_t getDataSize(uint8_t *readTocResponse);
+uint16_t getEffectiveDataSize(uint16_t returnedTocDataLen, uint16_t actualSizeAllocated);
+uint8_t getTracksCount(uint8_t firstTrackNum, uint8_t lastTrackNum);
+void setTrackDescriptors(TrackDescriptor *trackDescriptors, void *source, uint8_t count);
+void setTrackDescriptor(TrackDescriptor *dest, void *rawTrackDescriptor);
+uint8_t getAdr(void *rawTrackDescriptor);
+uint8_t getControl(void *rawTrackDescriptor);
+uint8_t getTrackNum(void *rawTrackDescriptor);
+uint32_t getStartAddr(void *rawTrackDescriptor);
 
 struct TOC {
-	void *trackDescriptors;
-	uint16_t trackDescriptorsSize;
+	TrackDescriptor *trackDescriptors;
+	uint8_t trackDescriptorsSize;
 	uint8_t firstTrackNum;
 	uint8_t lastTrackNum; 
+	uint8_t tracksCount;
+};
+
+struct TrackDescriptor {
+	uint32_t startAddr;
+	uint8_t adr;
+	uint8_t control;
+	uint8_t trackNum;
 };
 
 int main() {
@@ -41,10 +64,11 @@ int main() {
 	if(readTOC(&toc)) {
 		return 1;
 	}
-	printf("%d, %d, %d\n", toc.firstTrackNum, toc.lastTrackNum, toc.trackDescriptorsSize);
-	for(int i=0; i<toc.trackDescriptorsSize; i+=8) {
-		printf("%d\n", ((uint8_t *)(toc.trackDescriptors+i))[2]);
+
+	for(int i=0; i< toc.trackDescriptorsSize/8; i++) {
+		printf("%d %d %d %d\n", toc.trackDescriptors[i].trackNum, toc.trackDescriptors[i].startAddr, toc.trackDescriptors[i].control, toc.trackDescriptors[i].adr);
 	}
+
 	return 0;
 }
 
@@ -96,32 +120,37 @@ READ_TOC_STATUS readTOC(TOC *dest) {
 		return BAD_SENSE_DATA; 
 	}
 
-	uint16_t tocDataLen = getAllocLen(dxferp);
-	if(tocDataLen <= 2)
+	unsigned int tocDataSize = getDataSize(dxferp);
+	// the 2 (value of REPRESENTED_HEADER_SIZE) bytes in the response header that hold the value of the response size are not part of the total size info.
+	// in other words, the value of the data size is 2 less than the size of the full response.
+	// see MMC-3, Table 233 – READ TOC/PMA/ATIP response data (Format = 0000b), paragraph directly below table.
+	if(tocDataSize <= REPRESENTED_HEADER_SIZE) // there were no track descriptors returned
 		return NO_TOC_DATA_FOUND;
+	if(tocDataSize + REPRESENTED_HEADER_SIZE > ALLOC_LEN)
+		return INSUFFICIENT_BUFFER_SIZE;
+	uint16_t trackDescriptorsLen = tocDataSize - REPRESENTED_HEADER_SIZE;
 	TOC toc;
-	uint16_t trackDescriptorsLen;
-	if(tocDataLen < ALLOC_LEN)
-		trackDescriptorsLen = tocDataLen - 2;
-	else
-		trackDescriptorsLen = ALLOC_LEN - 4;
-
-	void *trackDescriptors = malloc(trackDescriptorsLen);
-	if(!trackDescriptors) 
+	TrackDescriptor *trackDescriptors = malloc((trackDescriptorsLen/TRACK_DESCRIPTOR_SIZE) * sizeof(TrackDescriptor));
+	if(!trackDescriptors)
 		return FAILED_TO_ALLOCATE_MEMORY;
-
-	memcpy(trackDescriptors, dxferp+4, trackDescriptorsLen);
-
+	toc.firstTrackNum = dxferp[FIRST_TRACK_NUM];
+	toc.lastTrackNum = dxferp[LAST_TRACK_NUM];
 	toc.trackDescriptorsSize = trackDescriptorsLen;
+	toc.tracksCount = getTracksCount(toc.firstTrackNum, toc.lastTrackNum);
+
+	setTrackDescriptors(trackDescriptors, dxferp+4, trackDescriptorsLen/TRACK_DESCRIPTOR_SIZE);
+	
 	toc.trackDescriptors = trackDescriptors;
-	toc.firstTrackNum = dxferp[2];
-	toc.lastTrackNum = dxferp[3];
 
 	*dest = toc;
 	return SUCCESS;
 }
 
-uint16_t getAllocLen(uint8_t *readTocResponse) {
+void destroyTOC(TOC toc) {
+	free(toc.trackDescriptors);
+}
+
+uint16_t getDataSize(uint8_t *readTocResponse) {
 	uint8_t msbyte = *readTocResponse;
 	uint8_t lsbyte = *(readTocResponse+1);
 	uint16_t ret = msbyte;
@@ -129,3 +158,50 @@ uint16_t getAllocLen(uint8_t *readTocResponse) {
 	ret |= lsbyte;
 	return ret;
 }
+
+uint8_t getTracksCount(uint8_t firstTrackNum, uint8_t lastTrackNum) {
+	return (lastTrackNum - firstTrackNum) + 1;
+}
+
+void setTrackDescriptors(TrackDescriptor *trackDescriptors, void *source, uint8_t count) {
+	for(int i=0; i<count; i++, source+=TRACK_DESCRIPTOR_SIZE) {
+		setTrackDescriptor(&(trackDescriptors[i]), source);
+	}
+}
+
+void setTrackDescriptor(TrackDescriptor *dest, void *rawTrackDescriptor) {
+	dest->adr = getAdr(rawTrackDescriptor);
+	dest->control = getControl(rawTrackDescriptor);
+	dest->trackNum = getTrackNum(rawTrackDescriptor);
+	dest->startAddr = getStartAddr(rawTrackDescriptor);
+}
+
+uint8_t getAdr(void *rawTrackDescriptor) {
+	uint8_t adrByte = ((uint8_t *)rawTrackDescriptor)[1];
+	return adrByte >> 4;
+}
+
+uint8_t getControl(void *rawTrackDescriptor) {
+	uint8_t controlByte = ((uint8_t *)rawTrackDescriptor)[1];
+	return controlByte & CONTROL_MASK;
+}
+
+uint8_t getTrackNum(void *rawTrackDescriptor) {
+	uint8_t trackNumByte = ((uint8_t *)rawTrackDescriptor)[2];
+	return trackNumByte;
+}
+
+uint32_t getStartAddr(void *rawTrackDescriptor) {
+	uint8_t *startAddrMSB = rawTrackDescriptor+4;
+	uint32_t startAddr = 0;
+	startAddr |= *startAddrMSB;
+	startAddr = startAddr << ONE_BYTE;
+	startAddr |= *(startAddrMSB+1);
+	startAddr = startAddr << ONE_BYTE;
+	startAddr |= *(startAddrMSB+2);
+	startAddr = startAddr << ONE_BYTE;
+	startAddr |= *(startAddrMSB+3);
+
+	return startAddr;
+}
+
