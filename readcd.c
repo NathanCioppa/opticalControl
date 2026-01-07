@@ -6,11 +6,12 @@
 #include <sys/ioctl.h>
 #include <stdint.h>
 #include <string.h>
+#include "readcd.h"
 
 #define CDB_SIZE 12
 #define OPCODE 0xbe
-#define SECTOR_TYPE 0b00100
-#define RET_TYPE_FIELDS 0b00110000 // returns userdata and a 4 byte header
+#define SECTOR_TYPE 0b00000100
+#define RET_TYPE_FIELDS 0b00010000 // returns userdata and a 4 byte header
 #define iOPCODE 0
 #define iSECTOR_TYPE 1
 #define iRET_TYPE 9
@@ -27,23 +28,45 @@ void setCDBStartLBA(uint8_t cdb[CDB_SIZE], uint32_t startLBA);
 void setCDBTransferLen(uint8_t cdb[CDB_SIZE], uint32_t transferLen);
 void buildSgIoHdr(sg_io_hdr_t *hdr, uint8_t cdb[CDB_SIZE], uint8_t *dataBuf, unsigned int dataBufSize, uint8_t senseBuf[MAX_SENSE]);
 
-void readCDAudio(uint32_t startLBA, uint32_t transferLen);
-
 static uint8_t cdb[CDB_SIZE];
+static int opticalDriveFD = -1;
 
 int main() {
-	int fd = open("/dev/sg0", O_RDONLY);
-	if(fd == -1)
-		return 1;
-	return 0;
+	if(readCDAudio(15212, 500) == SUCCESS)
+		return 0;
+	printf("fail\n");
+	return 1;
+
 }
 
-void readCDAudio(uint32_t startLBA, uint32_t transferLen) {
-	if(!*cdb) { // if the opcode is unset, then the CDB must never have been initialized
+// transferLen is the number of logical blocks to read, each block being BLOCK_SIZE (2352) bytes
+ReadAudioStatus readCDAudio(uint32_t startLBA, uint32_t transferLen) {
+	if(!*cdb) // if the opcode is unset, then the CDB must never have been initialized
 		buildCDB(cdb);
-	}
+	// opticalDriveFD will be initialized to -1 and set to -1 on error since its value is only set by open()
+	if(opticalDriveFD == -1 && (opticalDriveFD = open("/dev/sg0", O_RDONLY)) == -1) 
+		return FAILED_TO_OPEN_DEVICE;
 	setCDBStartLBA(cdb, startLBA);
 	setCDBTransferLen(cdb, transferLen);
+	printf("HERE\n");
+	sg_io_hdr_t hdr;
+	uint8_t dataBuf[50000];
+	memset(dataBuf, 0, 50000);
+	uint8_t senseBuf[MAX_SENSE];
+	buildSgIoHdr(&hdr, cdb, dataBuf, 50000, senseBuf);
+	if(ioctl(opticalDriveFD, SG_IO, &hdr) == -1)
+		return IOCTL_FAIL;
+	printf("HERE2\n");
+	if(hdr.sb_len_wr != 0)
+		return BAD_SENSE_DATA; 
+	printf("HERE3\n");
+
+	for(int i=0; i<50000; i++) {
+		printf("%d ",dataBuf[i]);
+	}
+	putchar('\n');
+
+	return SUCCESS;
 }
 
 void buildCDB(uint8_t cdb[CDB_SIZE]) {
