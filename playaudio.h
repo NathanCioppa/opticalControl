@@ -1,16 +1,14 @@
 
+#ifndef PLAYAUDIO_H
+#define PLAYAUDIO_H
+
+#include <stdint.h>
+
 typedef struct PCM PCM;
 
-typedef enum InitPCMStatus {
-	SUCCESS,
-	FAILED_ALLOCATE_MEMORY,
-	FAILED_OPEN_PCM,
-	FAILED_SET_ACCESS,
-	FAILED_SET_CHANNELS,
-	FAILED_SET_FORMAT,
-	FAILED_SET_RATE,
-	FAILED_SET_PARAMS,
+int initPCM(PCM **pcm);
+void destroyPCM(PCM *pcm);
+void setSamples(PCM *pcm, uint8_t *samples);
+long writeBuffer(PCM *pcm);
 
-} InitPCMStatus;
-
-InitPCMStatus initPCM(PCM *pcm);
+#endif

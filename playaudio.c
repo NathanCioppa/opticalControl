@@ -14,21 +14,29 @@
 #define FRAME_SIZE 4 // Each frames has 2 samples, one for each channel since CD audio is stero, and each sample is 2 bytes (signed 16 bit little endian)
 		    // 	Thus, the size of a single frame is 4 bytes
 
+#define SUCCESS 0
+#define FAILED_OPEN_PCM 1
+#define FAILED_SET_ACCESS 2
+#define FAILED_SET_FORMAT 3
+#define FAILED_SET_CHANNELS 4
+#define FAILED_SET_RATE 5
+#define FAILED_SET_PARAMS 6
+#define FAILED_ALLOCATE_MEMORY 7
+
 // snd_pcm_writei() writes audio to a pcmHandle. it takes a buffer of frames, and the number of frames.
 // each frame is 4 bytes, in the exact format returned from readcd.
 // each sample is 16 bit signed little endian (each frame is a left sample and right sample)
 
 struct PCM {
 	snd_pcm_t *handle;
-	snd_pcm_hw_params_t *params;
-	void *sampleBuf;
-	unsigned long sampleBufSize;
+	uint8_t *sampleBuf;
+	unsigned long transferSize;
 	unsigned int samplingRate;
 };
 
 // initializes the passed PCM to a valid PCM.
-// If any error occurs, *pcm is unmodified.
-InitPCMStatus initPCM(PCM *pcm) {
+// If any error occurs, dest is unmodified.
+int initPCM(PCM **dest) {
 	int err;
 	snd_pcm_t *handle;
 	snd_pcm_hw_params_t *params;
@@ -81,15 +89,19 @@ InitPCMStatus initPCM(PCM *pcm) {
 
 	// make the buffer for sending samples exactly as large as one period, in bytes.
 	unsigned long transferSize = frames * FRAME_SIZE;
-	void *sampleBuf = calloc(1, transferSize);
-	if(!sampleBuf)
+
+	PCM *pcm = malloc(sizeof(PCM));
+	if(!pcm)
 		return FAILED_ALLOCATE_MEMORY;
 
 	pcm->handle = handle;
-	pcm->params = params;
-	pcm->sampleBufSize = transferSize;
-	pcm->sampleBuf = sampleBuf;
+	pcm->transferSize = transferSize;
+	pcm->sampleBuf = NULL;
 	pcm->samplingRate = rate;
+
+	*dest = pcm;
+
+	snd_pcm_prepare(pcm->handle);
 
 	return SUCCESS;
 }
@@ -100,5 +112,19 @@ InitPCMStatus initPCM(PCM *pcm) {
 void destroyPCM(PCM *pcm) {
 	snd_pcm_drain(pcm->handle);
 	snd_pcm_close(pcm->handle);
-	free(pcm->sampleBuf);
 }
+
+// sample should be at least as large as pcm.transferSize
+void setSamples(PCM *pcm, uint8_t *samples) {
+	pcm->sampleBuf = samples;
+}
+
+long writeBuffer(PCM *pcm) {
+//	for(long i = 0; i<pcm->transferSize; i++) {
+//		printf("%d ", pcm->sampleBuf[i]);
+//	}
+//	putchar('\n');
+	return snd_pcm_writei(pcm->handle, pcm->sampleBuf, pcm->transferSize/FRAME_SIZE);
+}
+
+

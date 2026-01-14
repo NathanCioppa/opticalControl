@@ -22,6 +22,13 @@
 #define MAX_SENSE 0xff
 #define SCSI_GENERIC_INTERFACE_ID 'S'
 #define SG_IO_TIMEOUT 5000
+#define BLOCK_SIZE 2352
+
+#define SUCCESS 0
+#define FAILED_OPEN_DEVICE 1
+#define FAILED_ALLOCATE_MEMORY 2
+#define FAILED_IOCTL 3
+#define BAD_SENSE_DATA 4
 
 void buildCDB(uint8_t cdb[CDB_SIZE]);
 void setCDBStartLBA(uint8_t cdb[CDB_SIZE], uint32_t startLBA);
@@ -30,7 +37,7 @@ void buildSgIoHdr(sg_io_hdr_t *hdr, uint8_t cdb[CDB_SIZE], uint8_t *dataBuf, uns
 
 static uint8_t cdb[CDB_SIZE];
 static int opticalDriveFD = -1;
-
+/*
 int main() {
 	if(readCDAudio(15212, 500) == SUCCESS)
 		return 0;
@@ -38,33 +45,29 @@ int main() {
 	return 1;
 
 }
-
+*/
 // transferLen is the number of logical blocks to read, each block being BLOCK_SIZE (2352) bytes
-ReadAudioStatus readCDAudio(uint32_t startLBA, uint32_t transferLen) {
+int readCDAudio(uint32_t startLBA, uint32_t transferLen, void **dest) {
 	if(!*cdb) // if the opcode is unset, then the CDB must never have been initialized
 		buildCDB(cdb);
 	// opticalDriveFD will be initialized to -1 and set to -1 on error since its value is only set by open()
 	if(opticalDriveFD == -1 && (opticalDriveFD = open("/dev/sg0", O_RDONLY)) == -1) 
-		return FAILED_TO_OPEN_DEVICE;
+		return FAILED_OPEN_DEVICE;
+
+	*dest = realloc(*dest, transferLen * BLOCK_SIZE);
+	if(!dest)
+		return FAILED_ALLOCATE_MEMORY;
+
 	setCDBStartLBA(cdb, startLBA);
 	setCDBTransferLen(cdb, transferLen);
-	printf("HERE\n");
 	sg_io_hdr_t hdr;
-	uint8_t dataBuf[50000];
-	memset(dataBuf, 0, 50000);
+	//memset(*dest, 0, transferLen*BLOCK_SIZE);
 	uint8_t senseBuf[MAX_SENSE];
-	buildSgIoHdr(&hdr, cdb, dataBuf, 50000, senseBuf);
+	buildSgIoHdr(&hdr, cdb, *dest, 50000, senseBuf);
 	if(ioctl(opticalDriveFD, SG_IO, &hdr) == -1)
-		return IOCTL_FAIL;
-	printf("HERE2\n");
+		return FAILED_IOCTL;
 	if(hdr.sb_len_wr != 0)
 		return BAD_SENSE_DATA; 
-	printf("HERE3\n");
-
-	for(int i=0; i<50000; i++) {
-		printf("%d ",dataBuf[i]);
-	}
-	putchar('\n');
 
 	return SUCCESS;
 }

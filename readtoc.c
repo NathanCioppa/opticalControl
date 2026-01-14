@@ -34,6 +34,16 @@
 #define REPRESENTED_HEADER_SIZE 2
 #define CONTROL_MASK 0b00001111
 
+
+#define SUCCESS 0
+#define FAILED_ALLOCATE_MEMORY 1
+#define NO_TOC_DATA_FOUND 2
+#define FAILED_OPEN_DEVICE 3
+#define IOCTL_FAIL 4
+#define BAD_SENSE_DATA 5
+#define INSUFFICIENT_BUFFER_SIZE 6
+
+
 uint16_t getDataSize(uint8_t *readTocResponse);
 uint16_t getEffectiveDataSize(uint16_t returnedTocDataLen, uint16_t actualSizeAllocated);
 uint8_t getTracksCount(uint8_t firstTrackNum, uint8_t lastTrackNum);
@@ -58,7 +68,7 @@ struct TrackDescriptor {
 	uint8_t control;
 	uint8_t trackNum;
 };
-
+/*
 int main() {
 	TOC toc;
 	if(readTOC(&toc)) {
@@ -71,15 +81,16 @@ int main() {
 
 	return 0;
 }
+*/
 
 // Return value indicates either success of command or an indicator of faliliure.
 // Return values are in readtoc.h
 // On success, value of *trackCount is set to the number of tracks on the CD. 
-READ_TOC_STATUS readTOC(TOC *dest) {
+int readTOC(TOC **dest) {
 	int fd = open(DEVICE_FILE, O_RDONLY);
 	if(fd == -1) {
 		printf("failed to open file /dev/sg0\n");
-		return FAILED_TO_OPEN_DEVICE; 
+		return FAILED_OPEN_DEVICE; 
 	}
 
 	// only a very simple command descriptor block is needed
@@ -132,7 +143,7 @@ READ_TOC_STATUS readTOC(TOC *dest) {
 	TOC toc;
 	TrackDescriptor *trackDescriptors = malloc((trackDescriptorsLen/TRACK_DESCRIPTOR_SIZE) * sizeof(TrackDescriptor));
 	if(!trackDescriptors)
-		return FAILED_TO_ALLOCATE_MEMORY;
+		return FAILED_ALLOCATE_MEMORY;
 	toc.firstTrackNum = dxferp[FIRST_TRACK_NUM];
 	toc.lastTrackNum = dxferp[LAST_TRACK_NUM];
 	toc.trackDescriptorsSize = trackDescriptorsLen;
@@ -142,7 +153,8 @@ READ_TOC_STATUS readTOC(TOC *dest) {
 	
 	toc.trackDescriptors = trackDescriptors;
 
-	*dest = toc;
+	*dest = malloc(sizeof(TOC));
+	**dest = toc;
 	return SUCCESS;
 }
 
@@ -205,3 +217,22 @@ uint32_t getStartAddr(void *rawTrackDescriptor) {
 	return startAddr;
 }
 
+
+TrackDescriptor *getTracks(TOC toc) {
+	return toc.trackDescriptors;
+}
+uint8_t getTracksLen(TOC toc) {
+	return toc.trackDescriptorsSize/TRACK_DESCRIPTOR_SIZE;
+}
+uint8_t getFirstTrackNumber(TOC toc) {
+	return toc.firstTrackNum;
+}
+uint8_t getTrackCount(TOC toc) {
+	return toc.tracksCount;
+}
+uint32_t getStartLBA(TrackDescriptor track) {
+	return track.startAddr;
+}
+uint8_t getTrackNumber(TrackDescriptor track) {
+	return track.trackNum;
+}
