@@ -5,6 +5,9 @@
 #include "readcd.h"
 #include "playaudio.h"
 
+// buffer roughly 2 seconds of audio data
+#define CD_AUDIO_BLOCKS_TO_BUFFER (CD_AUDIO_BLOCKS_ONE_SEC * 2)
+
 int main() {
 	TOC *toc;
 	int status = readTOC(&toc); // toc now points to a malloced TOC struct;
@@ -13,6 +16,9 @@ int main() {
 		return 1;
 	}
 
+	TrackDescriptor *tracks = getTracks(toc);
+	TrackDescriptor *trackN = getTrack(tracks, 1);
+
 	PCM *pcm;
 	status = initPCM(&pcm);
 	if(status) {
@@ -20,28 +26,30 @@ int main() {
 		return 2;
 	}
 
-	void *samples = NULL;
-	status = readCDAudio(5000, 500, &samples);
+	void *sampleBuf = NULL;
+	uint32_t startLBA = getStartLBA(trackN);
+	status = readCDAudio(startLBA, CD_AUDIO_BLOCKS_TO_BUFFER, &sampleBuf);
 	if(status) {
 		printf("readaudio failed: %d\n", status);
 		return 3;
 	}
+	const long sampleBufSize = CD_AUDIO_BLOCK_SIZE * CD_AUDIO_BLOCKS_TO_BUFFER;
 
-	//for(int i=0; i<1000; i++) {
-	//	printf("%d ", ((uint8_t *)samples)[i]);
-	//}
-	//printf("\n################\n");
+	for(int i = 0; 1; i++) {
 
-	long offset = 0;
-	while(1) {
-		setSamples(pcm, samples+offset);
-		offset += writeBuffer(pcm) * 4;
-		//printf("%ld\n",offset);
+
+		readCDAudio(startLBA+(i*CD_AUDIO_BLOCKS_TO_BUFFER), CD_AUDIO_BLOCKS_TO_BUFFER, &sampleBuf);
+
+		long offset = 0;
+		while(offset < sampleBufSize - getTransferSize(pcm)) {
+			setSamples(pcm, sampleBuf+offset);
+			long bytesWritten = playBufferedAudio(pcm);
+			if(bytesWritten >= 0) {
+				offset+=bytesWritten;
+				continue;
+			}
+		}
 	}
-	
-	
-	//setSamples(pcm, samples);
-	//writeBuffer(pcm);
 	
 
 	return 0;

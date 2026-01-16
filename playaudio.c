@@ -13,6 +13,7 @@
 #define TARGET_PCM "default"
 #define FRAME_SIZE 4 // Each frames has 2 samples, one for each channel since CD audio is stero, and each sample is 2 bytes (signed 16 bit little endian)
 		    // 	Thus, the size of a single frame is 4 bytes
+#define PERIODS_TO_BUFFER 5
 
 #define SUCCESS 0
 #define FAILED_OPEN_PCM 1
@@ -31,6 +32,7 @@ struct PCM {
 	snd_pcm_t *handle;
 	uint8_t *sampleBuf;
 	unsigned long transferSize;
+	unsigned long alsaBufferSize;
 	unsigned int samplingRate;
 };
 
@@ -87,9 +89,14 @@ int initPCM(PCM **dest) {
 	snd_pcm_uframes_t frames = 0;
 	snd_pcm_hw_params_get_period_size(params, &frames, NULL);
 
-	// make the buffer for sending samples exactly as large as one period, in bytes.
-	unsigned long transferSize = frames * FRAME_SIZE;
+	unsigned long periodSize = frames * FRAME_SIZE;
+	// make the buffer for sending samples exactly as large as one period * PERIODS_TO_BUFFER
+	unsigned long transferSize = periodSize * PERIODS_TO_BUFFER;
 
+	snd_pcm_uframes_t bufferFrames;
+	snd_pcm_hw_params_get_buffer_size(params, &bufferFrames);
+	unsigned long alsaBufferSize = bufferFrames * FRAME_SIZE;
+	
 	PCM *pcm = malloc(sizeof(PCM));
 	if(!pcm)
 		return FAILED_ALLOCATE_MEMORY;
@@ -98,6 +105,7 @@ int initPCM(PCM **dest) {
 	pcm->transferSize = transferSize;
 	pcm->sampleBuf = NULL;
 	pcm->samplingRate = rate;
+	pcm->alsaBufferSize = alsaBufferSize;
 
 	*dest = pcm;
 
@@ -114,17 +122,32 @@ void destroyPCM(PCM *pcm) {
 	snd_pcm_close(pcm->handle);
 }
 
-// sample should be at least as large as pcm.transferSize
+// samples should be at least as large as pcm.transferSize
 void setSamples(PCM *pcm, uint8_t *samples) {
 	pcm->sampleBuf = samples;
 }
 
-long writeBuffer(PCM *pcm) {
-//	for(long i = 0; i<pcm->transferSize; i++) {
-//		printf("%d ", pcm->sampleBuf[i]);
-//	}
-//	putchar('\n');
-	return snd_pcm_writei(pcm->handle, pcm->sampleBuf, pcm->transferSize/FRAME_SIZE);
+// returns the number of bytes written, otherwise a negative error code;
+long playBufferedAudio(PCM *pcm) {
+	snd_pcm_sframes_t framesWritten = snd_pcm_writei(pcm->handle, pcm->sampleBuf, pcm->transferSize/FRAME_SIZE);
+	if(framesWritten >= 0)
+		return framesWritten * FRAME_SIZE;
+	if(framesWritten == -EBADFD)
+		return BAD_STATE;
+	if(framesWritten == -EPIPE)
+		return UNDERRUN;
+	if(framesWritten == -ESTRPIPE)
+		return SUSPENDED;
+	return UNKNOWN_ERR;
 }
 
+unsigned long getTransferSize(PCM *pcm) {
+	return pcm->transferSize;
+}
 
+unsigned int getSamplingRate(PCM *pcm) {
+	return pcm->samplingRate;
+}
+unsigned long getAudioQueueSize(PCM *pcm) {
+	return pcm->alsaBufferSize;
+}

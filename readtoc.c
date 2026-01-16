@@ -158,8 +158,8 @@ int readTOC(TOC **dest) {
 	return SUCCESS;
 }
 
-void destroyTOC(TOC toc) {
-	free(toc.trackDescriptors);
+void destroyTOC(TOC *toc) {
+	free(toc->trackDescriptors);
 }
 
 uint16_t getDataSize(uint8_t *readTocResponse) {
@@ -218,21 +218,27 @@ uint32_t getStartAddr(void *rawTrackDescriptor) {
 }
 
 
-TrackDescriptor *getTracks(TOC toc) {
-	return toc.trackDescriptors;
+TrackDescriptor *getTracks(TOC *toc) {
+	return toc->trackDescriptors;
 }
-uint8_t getTracksLen(TOC toc) {
-	return toc.trackDescriptorsSize/TRACK_DESCRIPTOR_SIZE;
+TrackDescriptor *getTrack(TrackDescriptor *tracks, uint8_t trackNum) {
+	if(trackNum == 0)
+		return NULL;
+	uint8_t trackIndex = trackNum-1;
+	return tracks+trackIndex;
 }
-uint8_t getFirstTrackNumber(TOC toc) {
-	return toc.firstTrackNum;
+uint8_t getTracksLen(TOC *toc) {
+	return toc->trackDescriptorsSize/TRACK_DESCRIPTOR_SIZE;
 }
-uint8_t getTrackCount(TOC toc) {
-	return toc.tracksCount;
+uint8_t getFirstTrackNumber(TOC *toc) {
+	return toc->firstTrackNum;
 }
-uint32_t getStartLBA(TrackDescriptor track) {
-	return track.startAddr;
+uint8_t getTrackCount(TOC *toc) {
+	return toc->tracksCount;
 }
-uint8_t getTrackNumber(TrackDescriptor track) {
-	return track.trackNum;
+uint32_t getStartLBA(TrackDescriptor *track) {
+	return track->startAddr;
+}
+uint8_t getTrackNumber(TrackDescriptor *track) {
+	return track->trackNum;
 }
