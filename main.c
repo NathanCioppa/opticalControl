@@ -2,11 +2,7 @@
 #include <stdio.h>
 
 #include "readtoc.h"
-#include "readcd.h"
 #include "playaudio.h"
-
-// buffer roughly 2 seconds of audio data
-#define CD_AUDIO_BLOCKS_TO_BUFFER (CD_AUDIO_BLOCKS_ONE_SEC * 2)
 
 int main() {
 	TOC *toc;
@@ -17,7 +13,7 @@ int main() {
 	}
 
 	TrackDescriptor *tracks = getTracks(toc);
-	TrackDescriptor *trackN = getTrack(tracks, 1);
+	TrackDescriptor *trackN = getTrack(tracks, 19);
 
 	PCM *pcm;
 	status = initPCM(&pcm);
@@ -26,31 +22,14 @@ int main() {
 		return 2;
 	}
 
-	void *sampleBuf = NULL;
 	uint32_t startLBA = getStartLBA(trackN);
-	status = readCDAudio(startLBA, CD_AUDIO_BLOCKS_TO_BUFFER, &sampleBuf);
-	if(status) {
-		printf("readaudio failed: %d\n", status);
-		return 3;
-	}
-	const long sampleBufSize = CD_AUDIO_BLOCK_SIZE * CD_AUDIO_BLOCKS_TO_BUFFER;
-
-	for(int i = 0; 1; i++) {
-
-
-		readCDAudio(startLBA+(i*CD_AUDIO_BLOCKS_TO_BUFFER), CD_AUDIO_BLOCKS_TO_BUFFER, &sampleBuf);
-
-		long offset = 0;
-		while(offset < sampleBufSize - getTransferSize(pcm)) {
-			setSamples(pcm, sampleBuf+offset);
-			long bytesWritten = playBufferedAudio(pcm);
-			if(bytesWritten >= 0) {
-				offset+=bytesWritten;
-				continue;
-			}
-		}
-	}
+	uint32_t leadoutLBA = getLeadoutLBA(toc);
 	
-
+	if(startPlayingFrom(startLBA, leadoutLBA, pcm))
+		printf("BAD\n");
+	destroyPCM(pcm);
 	return 0;
+
 }
+
+ 

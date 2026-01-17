@@ -5,15 +5,18 @@
 // Other sources will be sited throughout and I'll try to clarify convoluded things with comments.
 
 #include <alsa/asoundlib.h>
+#include <stdbool.h>
 #include "playaudio.h"
-
+#include "readcd.h"
 
 #define STEREO 2
 #define CD_SAMPLING_RATE 44100
 #define TARGET_PCM "default"
 #define FRAME_SIZE 4 // Each frames has 2 samples, one for each channel since CD audio is stero, and each sample is 2 bytes (signed 16 bit little endian)
 		    // 	Thus, the size of a single frame is 4 bytes
-#define PERIODS_TO_BUFFER 5
+#define PERIODS_TO_BUFFER 2
+
+#define CD_AUDIO_BLOCKS_TO_BUFFER (CD_AUDIO_BLOCKS_ONE_SEC * 2)
 
 #define SUCCESS 0
 #define FAILED_OPEN_PCM 1
@@ -28,11 +31,12 @@
 // each frame is 4 bytes, in the exact format returned from readcd.
 // each sample is 16 bit signed little endian (each frame is a left sample and right sample)
 
+long playBufferedAudio(PCM *pcm, long transferSize);
+
 struct PCM {
 	snd_pcm_t *handle;
 	uint8_t *sampleBuf;
 	unsigned long transferSize;
-	unsigned long alsaBufferSize;
 	unsigned int samplingRate;
 };
 
@@ -92,10 +96,6 @@ int initPCM(PCM **dest) {
 	unsigned long periodSize = frames * FRAME_SIZE;
 	// make the buffer for sending samples exactly as large as one period * PERIODS_TO_BUFFER
 	unsigned long transferSize = periodSize * PERIODS_TO_BUFFER;
-
-	snd_pcm_uframes_t bufferFrames;
-	snd_pcm_hw_params_get_buffer_size(params, &bufferFrames);
-	unsigned long alsaBufferSize = bufferFrames * FRAME_SIZE;
 	
 	PCM *pcm = malloc(sizeof(PCM));
 	if(!pcm)
@@ -105,7 +105,6 @@ int initPCM(PCM **dest) {
 	pcm->transferSize = transferSize;
 	pcm->sampleBuf = NULL;
 	pcm->samplingRate = rate;
-	pcm->alsaBufferSize = alsaBufferSize;
 
 	*dest = pcm;
 
@@ -128,8 +127,8 @@ void setSamples(PCM *pcm, uint8_t *samples) {
 }
 
 // returns the number of bytes written, otherwise a negative error code;
-long playBufferedAudio(PCM *pcm) {
-	snd_pcm_sframes_t framesWritten = snd_pcm_writei(pcm->handle, pcm->sampleBuf, pcm->transferSize/FRAME_SIZE);
+long playBufferedAudio(PCM *pcm, long transferSize) {
+	snd_pcm_sframes_t framesWritten = snd_pcm_writei(pcm->handle, pcm->sampleBuf, transferSize/FRAME_SIZE);
 	if(framesWritten >= 0)
 		return framesWritten * FRAME_SIZE;
 	if(framesWritten == -EBADFD)
@@ -148,6 +147,38 @@ unsigned long getTransferSize(PCM *pcm) {
 unsigned int getSamplingRate(PCM *pcm) {
 	return pcm->samplingRate;
 }
-unsigned long getAudioQueueSize(PCM *pcm) {
-	return pcm->alsaBufferSize;
+
+// functions below do not directly interact with ALSA, they use the functions above.
+
+int startPlayingFrom(uint32_t startLBA, uint32_t leadoutLBA, PCM *pcm) {
+	void *sampleBuf = NULL;
+	long sampleBufSize = 0;
+	bool leadoutReached = false;
+
+	for(int buffersFilled = 0; !leadoutReached; buffersFilled++) {
+		printf("NEW BUFF\n");
+		int status = readCDAudio(startLBA+(buffersFilled*CD_AUDIO_BLOCKS_TO_BUFFER), leadoutLBA, CD_AUDIO_BLOCKS_TO_BUFFER, &sampleBuf, &sampleBufSize);
+		if(status ==  READ_CD_AUDIO_LEADOUT_REACHED) {
+			printf("LEADOUT\n");
+			leadoutReached = true;
+		}
+		else if(status) {
+			printf("readaudio failed: %d\n", status);
+			return 3;
+		}
+
+		long offset = 0;
+		while(offset < sampleBufSize - getTransferSize(pcm)) {
+			setSamples(pcm, sampleBuf+offset);
+			long bytesWritten = playBufferedAudio(pcm, pcm->transferSize);
+			if(bytesWritten >= 0) {
+				offset+=bytesWritten;
+				continue;
+			}
+		}
+		long remainder = sampleBufSize - offset;
+		setSamples(pcm, sampleBuf+offset);
+		long bytesWritten = playBufferedAudio(pcm, remainder);
+	}
+	return 0;
 }

@@ -33,7 +33,7 @@
 #define RESPONSE_HEADER_SIZE 4
 #define REPRESENTED_HEADER_SIZE 2
 #define CONTROL_MASK 0b00001111
-
+#define LEADOUT_TRACK_NUM 0xaa
 
 #define SUCCESS 0
 #define FAILED_ALLOCATE_MEMORY 1
@@ -70,13 +70,13 @@ struct TrackDescriptor {
 };
 /*
 int main() {
-	TOC toc;
+	TOC *toc;
 	if(readTOC(&toc)) {
 		return 1;
 	}
 
-	for(int i=0; i< toc.trackDescriptorsSize/8; i++) {
-		printf("%d %d %d %d\n", toc.trackDescriptors[i].trackNum, toc.trackDescriptors[i].startAddr, toc.trackDescriptors[i].control, toc.trackDescriptors[i].adr);
+	for(int i=0; i< toc->trackDescriptorsSize/8; i++) {
+		printf("%d %d %d %d\n", toc->trackDescriptors[i].trackNum, toc->trackDescriptors[i].startAddr, toc->trackDescriptors[i].control, toc->trackDescriptors[i].adr);
 	}
 
 	return 0;
@@ -241,4 +241,17 @@ uint32_t getStartLBA(TrackDescriptor *track) {
 }
 uint8_t getTrackNumber(TrackDescriptor *track) {
 	return track->trackNum;
+}
+// If the leadout marker does not exist or the toc has 0 tracks in it, this will just return 0. 
+// A nonexistent leadout marker means a malformed disc or bad readTOC() method, and having 0 tracks means there is no music anyway.
+uint32_t getLeadoutLBA(TOC *toc) {
+	int lastIndex = toc->trackDescriptorsSize/sizeof(TrackDescriptor) - 1;
+	if(lastIndex < 0)
+		return 0;
+	// seach backwards since usually the final track is the leadout marker
+	for(int i=lastIndex; i>=0; i--) {
+		if(toc->trackDescriptors[i].trackNum == LEADOUT_TRACK_NUM)
+			return toc->trackDescriptors[i].startAddr;
+	}
+	return 0;
 }

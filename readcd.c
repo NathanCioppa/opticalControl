@@ -6,6 +6,8 @@
 #include <sys/ioctl.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdbool.h> 
+
 #include "readcd.h"
 #include "config.h"
 
@@ -33,6 +35,8 @@
 #define FAILED_ALLOCATE_MEMORY 2
 #define FAILED_IOCTL 3
 #define BAD_SENSE_DATA 4
+#define START_LBA_OUT_OF_RANGE 5
+#define LEADOUT_REACHED READ_CD_AUDIO_LEADOUT_REACHED
 
 void buildCDB(uint8_t cdb[CDB_SIZE]);
 void setCDBStartLBA(uint8_t cdb[CDB_SIZE], uint32_t startLBA);
@@ -43,7 +47,14 @@ int getCDAudioBatch(unsigned long startLBA, unsigned long batchSize, int optical
 static int opticalDriveFD = -1;
 
 // transferLen is the number of logical blocks to read, each block being BLOCK_SIZE (2352) bytes
-int readCDAudio(uint32_t startLBA, uint32_t transferLen, void **dest) {
+int readCDAudio(uint32_t startLBA, uint32_t leadoutLBA,uint32_t transferLen, void **dest, long *destSizeWritten) {
+	bool leadoutReached = false;
+	if(startLBA >= leadoutLBA)
+		return START_LBA_OUT_OF_RANGE;
+	if(startLBA+transferLen >= leadoutLBA) {
+		transferLen = leadoutLBA - startLBA;
+		leadoutReached = true;
+	}
 	// opticalDriveFD will be initialized to -1 and set to -1 on error since its value is only set by open()
 	if(opticalDriveFD == -1 && (opticalDriveFD = open(OPTICAL_DRIVE_PATH, O_RDONLY)) == -1) 
 		return FAILED_OPEN_DEVICE;
@@ -68,7 +79,14 @@ int readCDAudio(uint32_t startLBA, uint32_t transferLen, void **dest) {
 	// when there is no longer space for a full batch, get a smaller one to fill the rest of *dest
 	long blocksRemaining = (dataSize-offset)/BLOCK_SIZE;
 	if(blocksRemaining > 0)
-		return getCDAudioBatch(startLBA+(offset/BLOCK_SIZE), blocksRemaining, opticalDriveFD, (*dest)+offset);
+		status = getCDAudioBatch(startLBA+(offset/BLOCK_SIZE), blocksRemaining, opticalDriveFD, (*dest)+offset);
+	
+	if(status)
+		return status;
+
+	*destSizeWritten = dataSize;
+	if(leadoutReached)
+		return LEADOUT_REACHED;
 	return SUCCESS;
 }
 

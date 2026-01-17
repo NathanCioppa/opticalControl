@@ -17,5 +17,5 @@ uint8_t getFirstTrackNumber(TOC *toc);
 uint8_t getTrackCount(TOC *toc);
 uint32_t getStartLBA(TrackDescriptor *track);
 uint8_t getTrackNumber(TrackDescriptor *track);
-
+uint32_t getLeadoutLBA(TOC *toc);
 #endif
