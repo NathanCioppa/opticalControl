@@ -156,10 +156,10 @@ int startPlayingFrom(uint32_t startLBA, uint32_t leadoutLBA, PCM *pcm) {
 	bool leadoutReached = false;
 
 	for(int buffersFilled = 0; !leadoutReached; buffersFilled++) {
-		printf("NEW BUFF\n");
+		//printf("NEW BUFF\n");
 		int status = readCDAudio(startLBA+(buffersFilled*CD_AUDIO_BLOCKS_TO_BUFFER), leadoutLBA, CD_AUDIO_BLOCKS_TO_BUFFER, &sampleBuf, &sampleBufSize);
 		if(status ==  READ_CD_AUDIO_LEADOUT_REACHED) {
-			printf("LEADOUT\n");
+		//	printf("LEADOUT\n");
 			leadoutReached = true;
 		}
 		else if(status) {

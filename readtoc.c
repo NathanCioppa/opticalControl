@@ -217,15 +217,16 @@ uint32_t getStartAddr(void *rawTrackDescriptor) {
 	return startAddr;
 }
 
-
+/*
 TrackDescriptor *getTracks(TOC *toc) {
 	return toc->trackDescriptors;
 }
-TrackDescriptor *getTrack(TrackDescriptor *tracks, uint8_t trackNum) {
+*/
+TrackDescriptor *getTrack(TOC *toc, uint8_t trackNum) {
 	if(trackNum == 0)
 		return NULL;
 	uint8_t trackIndex = trackNum-1;
-	return tracks+trackIndex;
+	return toc->trackDescriptors+trackIndex;
 }
 uint8_t getTracksLen(TOC *toc) {
 	return toc->trackDescriptorsSize/TRACK_DESCRIPTOR_SIZE;

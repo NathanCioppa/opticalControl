@@ -10,8 +10,8 @@ typedef struct TrackDescriptor TrackDescriptor;
 int readTOC(TOC **dest);
 void destroyTOC(TOC *toc);
 
-TrackDescriptor *getTracks(TOC *toc);
-TrackDescriptor *getTrack(TrackDescriptor *tracks, uint8_t trackNum);
+//TrackDescriptor *getTracks(TOC *toc);
+TrackDescriptor *getTrack(TOC *toc, uint8_t trackNum);
 uint8_t getTracksLen(TOC *toc);
 uint8_t getFirstTrackNumber(TOC *toc);
 uint8_t getTrackCount(TOC *toc);
