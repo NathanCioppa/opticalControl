@@ -94,6 +94,14 @@
 
 #define INITAL_POOL_SIZE 256
 
+#define SUCCESS 0
+#define	FAILED_TO_ALLOCATE_MEMORY 1
+#define	FAILED_TO_OPEN_DEVICE_FILE 2
+#define	FAILED_IOCTL 3
+#define	CDTEXT_DOES_NOT_EXIST 4
+#define	CDTEXT_DATA_EMPTY 5
+#define	BLOCKNUM_OUT_OF_RANGE 6
+#define	BLOCKNUM_NOT_FOUND 7
 
 typedef struct PackData PackData;
 typedef struct Block Block;
@@ -102,8 +110,8 @@ typedef struct TrackNumRange TrackNumRange;
 CDText makeCDText(PackData packs);
 unsigned int getDataLen(uint8_t *readTextResponse);
 void *getPackStart(void *readTextResponse);
-void buildCDB(uint8_t cdb[CDB_SIZE]);
-void buildSgIoHdr(sg_io_hdr_t *hdr, uint8_t *cdb, uint8_t dataBuf[ALLOC_LEN], uint8_t senseBuf[MAX_SENSE]);
+static void buildCDB(uint8_t cdb[CDB_SIZE]);
+static void buildSgIoHdr(sg_io_hdr_t *hdr, uint8_t *cdb, uint8_t dataBuf[ALLOC_LEN], uint8_t senseBuf[MAX_SENSE]);
 uint16_t toUtf8(unsigned char c);
 uint8_t getBlockNum(void *pack);
 PackData makePackData(void *packDataStart, unsigned int packDataSize);
@@ -140,7 +148,7 @@ struct CDText {
 };
 
 
-
+/*
 int main() {
 	CDText text;
 	if(readText(&text, 0))
@@ -155,12 +163,13 @@ int main() {
 
 	return 0;
 }
+*/
 
 // Changes the value at *dest to be a valid CDText struct.
 // On failiure, *dest is unmodified
 // returns an error code, 0 is success.
 // most reliable value for defaultBlockNum is 0
-ReadTextStatus readText(CDText *dest, uint8_t defaultBlockNum) {
+int readText(CDText **dest, uint8_t defaultBlockNum) {
 	int fd = open(DEVICE_FILE, O_RDONLY);
 	if(fd == -1) {
 		return FAILED_TO_OPEN_DEVICE_FILE;
@@ -200,13 +209,34 @@ ReadTextStatus readText(CDText *dest, uint8_t defaultBlockNum) {
 	PackData packs = makePackData(packsAlloc, packDataSize);
 	CDText text = makeCDText(packs);
 
-	ReadTextStatus status = setBlock(&text, defaultBlockNum);
-	if(status == SUCCESS)
-		*dest = text;
+	int status = setBlock(&text, defaultBlockNum);
+	if(status == SUCCESS) {
+		CDText *textp = malloc(sizeof(CDText));
+		if(!textp) {
+			free(packsAlloc);
+			return FAILED_TO_ALLOCATE_MEMORY;
+		}
+		*textp = text;
+		*dest = textp;
+	}
 	return status;
 }
 
-void buildCDB(uint8_t cdb[CDB_SIZE]) {
+void printReadTextErr(int err) {
+	switch(err) {
+		case CDTEXT_DOES_NOT_EXIST:
+			printf("There is no CD-Text on this disc.");
+			break;
+		case SUCCESS:
+			printf("readText() was successful.");
+			break;
+		default:
+			printf("readText() failed.");
+
+	}
+}
+
+static void buildCDB(uint8_t cdb[CDB_SIZE]) {
 	memset(cdb, 0, CDB_SIZE);
 	cdb[iOPCODE] = OPCODE;
 	cdb[iALLOC_LEN_MSBYTE] = ALLOC_MSBYTE;
@@ -214,7 +244,7 @@ void buildCDB(uint8_t cdb[CDB_SIZE]) {
 	cdb[iFORMAT] = FORMAT;
 }
 
-void buildSgIoHdr(sg_io_hdr_t *hdr, uint8_t cdb[CDB_SIZE], uint8_t dataBuf[ALLOC_LEN], uint8_t senseBuf[MAX_SENSE]) {
+static void buildSgIoHdr(sg_io_hdr_t *hdr, uint8_t cdb[CDB_SIZE], uint8_t dataBuf[ALLOC_LEN], uint8_t senseBuf[MAX_SENSE]) {
 	memset(hdr, 0, sizeof(sg_io_hdr_t));
 	
 	hdr->interface_id = SCSI_GENERIC_INTERFACE_ID;
@@ -320,7 +350,7 @@ CDText makeCDText(PackData packs) {
 // CDText *text should be non-null and point to CDText returned from makeCDText()
 // blockNum should be in range [0,7],but out of that range will still behave the same as if Block "blockNum" does not exist
 // Note that this function does not allocate any memory; the pointer inside of text->block that is set simply points into memory alredy allocated for text->packs
-ReadTextStatus setBlock(CDText *text, uint8_t blockNum) {
+int setBlock(CDText *text, uint8_t blockNum) {
 	if(blockNum > 7)
 		return BLOCKNUM_OUT_OF_RANGE;
 	
@@ -531,10 +561,10 @@ char *makeTrackInfoPool(PackData packs, uint8_t trackCount, char **strings ,uint
 
 // free all heap allocated memory being used by text. Using text after this call has undefined behavior.
 // readText() is (or at least should be) implemented such that this funcion can properly free CDText returned from it.
-void destroyCDText(CDText text) {
-	free(text.packs.start);
-	destroyTracks(text.block.album);
-	destroyTracks(text.block.tracks);
+void destroyCDText(CDText *text) {
+	free(text->packs.start);
+	destroyTracks(text->block.album);
+	destroyTracks(text->block.tracks);
 }
 
 void destroyTracks(Track *tracks) {
@@ -542,3 +572,27 @@ void destroyTracks(Track *tracks) {
 	free(tracks->artist);
 	free(tracks);
 } 
+
+
+
+char *getAlbumName(CDText *text) {
+	return text->block.album->title;
+}
+char *getAlbumArtist(CDText *text) {
+	return text->block.album->artist;
+}
+char *getTrackName(CDText *text, uint8_t trackNum) {
+	TrackNumRange range = text->block.range;
+	if(trackNum == 0 || trackNum < range.first || trackNum > range.last)
+		return NULL;
+	uint8_t index = trackNum - range.first;
+	return text->block.tracks[index].title;
+}
+char *getTrackArtist(CDText *text, uint8_t trackNum) {
+	TrackNumRange range = text->block.range;
+	if(trackNum == 0 || trackNum < range.first || trackNum > range.last)
+		return NULL;
+	uint8_t index = trackNum - range.first;
+	return text->block.tracks[index].artist;
+}
+

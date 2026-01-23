@@ -10,11 +10,12 @@
 #include "readcd.h"
 
 #define STEREO 2
-#define CD_SAMPLING_RATE 44100
+#define CD_SAMPLING_RATE 44100 // frames per second
+#define PCM_BUF_BEFORE_BLOCKING (CD_SAMPLING_RATE / 2) // pcm only buffers this much audio
 #define TARGET_PCM "default"
 #define FRAME_SIZE 4 // Each frames has 2 samples, one for each channel since CD audio is stero, and each sample is 2 bytes (signed 16 bit little endian)
 		    // 	Thus, the size of a single frame is 4 bytes
-#define PERIODS_TO_BUFFER 2
+#define PERIODS_TO_BUFFER 4 // try to keep at least this many periods in the PCM at a time for smooth playback
 
 #define CD_AUDIO_BLOCKS_TO_BUFFER (CD_AUDIO_BLOCKS_ONE_SEC * 2)
 
@@ -26,18 +27,14 @@
 #define FAILED_SET_RATE 5
 #define FAILED_SET_PARAMS 6
 #define FAILED_ALLOCATE_MEMORY 7
+#define FAILED_SET_BUF 8
 
-// snd_pcm_writei() writes audio to a pcmHandle. it takes a buffer of frames, and the number of frames.
-// each frame is 4 bytes, in the exact format returned from readcd.
-// each sample is 16 bit signed little endian (each frame is a left sample and right sample)
-
-long playBufferedAudio(PCM *pcm, long transferSize);
+sframes writeFramesForPlayback(PCM *pcm, void *frameBuf, snd_pcm_uframes_t framesInBuf);
 
 struct PCM {
 	snd_pcm_t *handle;
-	uint8_t *sampleBuf;
-	unsigned long transferSize;
-	unsigned int samplingRate;
+	uframes transferLen; // the desired number of frames to send to snd_pcm_writei() at a time
+	uframes samplingRate;
 };
 
 // initializes the passed PCM to a valid PCM.
@@ -83,27 +80,30 @@ int initPCM(PCM **dest) {
 		return FAILED_SET_RATE;
 	}
 
+	// Sets the number of frames the PCM handle can accept before blocking, keep small to avoid latency when draining the pcm
+	snd_pcm_uframes_t bufFrames = PCM_BUF_BEFORE_BLOCKING;
+	if ((err = snd_pcm_hw_params_set_buffer_size_near(handle, params, &bufFrames) < 0))
+		return FAILED_SET_BUF;
+
 	// apply the parameters
 	if((err = snd_pcm_hw_params(handle, params)) < 0) {
 		return FAILED_SET_PARAMS;
 	}
 
-	// from my understanding of https://www.linuxjournal.com/article/6735, a period is the smallest unit of audio data transfer. 
+	// from my understanding of https://www.linuxjournal.com/article/6735, a period is the smallest unit of audio data transfer to the PCM. 
 	// get_period_size sets the second param to the number of frames that each period has.
-	snd_pcm_uframes_t frames = 0;
-	snd_pcm_hw_params_get_period_size(params, &frames, NULL);
+	// For now this application just uses whatever the default value is and does not attempt to set it's own.
+	snd_pcm_uframes_t periodFrames = 0;
+	snd_pcm_hw_params_get_period_size(params, &periodFrames, NULL);
 
-	unsigned long periodSize = frames * FRAME_SIZE;
-	// make the buffer for sending samples exactly as large as one period * PERIODS_TO_BUFFER
-	unsigned long transferSize = periodSize * PERIODS_TO_BUFFER;
+	uframes transferLen = periodFrames * PERIODS_TO_BUFFER;
 	
 	PCM *pcm = malloc(sizeof(PCM));
 	if(!pcm)
 		return FAILED_ALLOCATE_MEMORY;
 
 	pcm->handle = handle;
-	pcm->transferSize = transferSize;
-	pcm->sampleBuf = NULL;
+	pcm->transferLen = transferLen;
 	pcm->samplingRate = rate;
 
 	*dest = pcm;
@@ -121,16 +121,12 @@ void destroyPCM(PCM *pcm) {
 	snd_pcm_close(pcm->handle);
 }
 
-// samples should be at least as large as pcm.transferSize
-void setSamples(PCM *pcm, uint8_t *samples) {
-	pcm->sampleBuf = samples;
-}
-
-// returns the number of bytes written, otherwise a negative error code;
-long playBufferedAudio(PCM *pcm, long transferSize) {
-	snd_pcm_sframes_t framesWritten = snd_pcm_writei(pcm->handle, pcm->sampleBuf, transferSize/FRAME_SIZE);
+// writes framesInBuf frames from frameBuf to the PCM's buffer to be played
+// returns the number of frames written, otherwise a negative error code;
+sframes writeFramesForPlayback(PCM *pcm, void *frameBuf, snd_pcm_uframes_t framesInBuf) {
+	snd_pcm_sframes_t framesWritten = snd_pcm_writei(pcm->handle, frameBuf, framesInBuf);
 	if(framesWritten >= 0)
-		return framesWritten * FRAME_SIZE;
+		return framesWritten;
 	if(framesWritten == -EBADFD)
 		return BAD_STATE;
 	if(framesWritten == -EPIPE)
@@ -140,26 +136,25 @@ long playBufferedAudio(PCM *pcm, long transferSize) {
 	return UNKNOWN_ERR;
 }
 
-unsigned long getTransferSize(PCM *pcm) {
-	return pcm->transferSize;
+snd_pcm_uframes_t getTransferLen(PCM *pcm) {
+	return pcm->transferLen;
 }
 
-unsigned int getSamplingRate(PCM *pcm) {
+uframes getSamplingRate(PCM *pcm) {
 	return pcm->samplingRate;
 }
 
-// functions below do not directly interact with ALSA, they use the functions above.
 
 int startPlayingFrom(uint32_t startLBA, uint32_t leadoutLBA, PCM *pcm) {
-	void *sampleBuf = NULL;
-	long sampleBufSize = 0;
+	void *framesBuf = NULL;
+	long framesBufSize = 0;
 	bool leadoutReached = false;
 
 	for(int buffersFilled = 0; !leadoutReached; buffersFilled++) {
 		//printf("NEW BUFF\n");
-		int status = readCDAudio(startLBA+(buffersFilled*CD_AUDIO_BLOCKS_TO_BUFFER), leadoutLBA, CD_AUDIO_BLOCKS_TO_BUFFER, &sampleBuf, &sampleBufSize);
+		int status = readCDAudio(startLBA+(buffersFilled*CD_AUDIO_BLOCKS_TO_BUFFER), leadoutLBA, CD_AUDIO_BLOCKS_TO_BUFFER, &framesBuf, &framesBufSize);
 		if(status ==  READ_CD_AUDIO_LEADOUT_REACHED) {
-		//	printf("LEADOUT\n");
+			//printf("LEADOUT\n");
 			leadoutReached = true;
 		}
 		else if(status) {
@@ -167,18 +162,19 @@ int startPlayingFrom(uint32_t startLBA, uint32_t leadoutLBA, PCM *pcm) {
 			return 3;
 		}
 
-		long offset = 0;
-		while(offset < sampleBufSize - getTransferSize(pcm)) {
-			setSamples(pcm, sampleBuf+offset);
-			long bytesWritten = playBufferedAudio(pcm, pcm->transferSize);
-			if(bytesWritten >= 0) {
-				offset+=bytesWritten;
+		// TODO error handling for writeFramesForPlayback() calls
+
+		long offset = 0; // offset is in bytes, always incremented in multiples of FRAME_SIZE
+		uframes framesPerTransfer = getTransferLen(pcm);
+		while(offset < framesBufSize - (framesPerTransfer*FRAME_SIZE)) {
+			sframes framesWritten = writeFramesForPlayback(pcm, framesBuf+offset, framesPerTransfer);
+			if(framesWritten >= 0) {
+				offset += framesWritten*FRAME_SIZE;
 				continue;
 			}
 		}
-		long remainder = sampleBufSize - offset;
-		setSamples(pcm, sampleBuf+offset);
-		long bytesWritten = playBufferedAudio(pcm, remainder);
+		sframes remainder = (framesBufSize - offset)/FRAME_SIZE;
+		sframes framesWritten = writeFramesForPlayback(pcm, framesBuf+offset, remainder);
 	}
 	return 0;
 }

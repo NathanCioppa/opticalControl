@@ -11,13 +11,14 @@
 #define UNKNOWN_ERR -4;
 
 typedef struct PCM PCM;
+typedef unsigned long uframes;
+typedef long sframes;
 
 int initPCM(PCM **pcm);
 void destroyPCM(PCM *pcm);
 void setSamples(PCM *pcm, uint8_t *samples);
-unsigned long getTransferSize(PCM *pcm);
-unsigned int getSamplingRate(PCM *pcm);
-unsigned long getAudioQueueSize(PCM *pcm);
+uframes getTransferLen(PCM *pcm);
+uframes getSamplingRate(PCM *pcm);
 
 int startPlayingFrom(uint32_t startLBA, uint32_t leadoutLBA, PCM *pcm);
 

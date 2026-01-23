@@ -4,12 +4,12 @@
 
 #include "readtext.h"
 
-typedef struct CD CD;
+//typedef struct CD CD;
 typedef struct Track Track;
 
-struct CD {
-	CDText *text;
-};
+//struct CD {
+//	CDText *text;
+//};
 
 struct Track {
 	char *title;
